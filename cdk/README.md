@@ -38,7 +38,7 @@ configuration names them):
    get a public IP; there is no NAT. If the tasks must reach private services,
    admit the runner security group (the stack output `RunnerSecurityGroupId`, or
    your own, listed in `network.securityGroupIds`) on the other side.
-2. The permissions boundary policy (default name `pb@tech-grun`) in the account.
+2. The permissions boundary policy (default name `pb@tech-grun`) in the account. The Go module `boundary/` renders the document, and the bootstrap roles' own boundary; see "Permissions boundaries" in the root README.
 3. An ECR pull-through cache for the registry that holds ci-plane's runner
    image, and the image tag named in `runnerImage.version`.
 4. For each organisation: an ACM certificate for its webhook domain in the stack
