@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowAll",
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyIAMWriteExceptGrun",
+      "Effect": "Deny",
+      "Action": [
+        "iam:Delete*",
+        "iam:Put*",
+        "iam:Update*",
+        "iam:Attach*",
+        "iam:Detach*",
+        "iam:Add*",
+        "iam:Remove*",
+        "iam:Set*",
+        "iam:Tag*",
+        "iam:Untag*",
+        "iam:Upload*",
+        "iam:Enable*",
+        "iam:Disable*",
+        "iam:Resync*",
+        "iam:Deactivate*",
+        "iam:Generate*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyCreateExceptServiceLinkedRole",
+      "Effect": "Deny",
+      "Action": "iam:Create*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:AWSServiceName": "ecs.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DenyPassRoleOutsideGrunRoles",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "NotResource": "arn:part:iam::*:role/grun-*"
+    },
+    {
+      "Sid": "DenyPassRoleToOtherServices",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

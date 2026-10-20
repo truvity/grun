@@ -8,6 +8,7 @@ GitHub Actions self-hosted runners on AWS ECS Fargate, deployed with
 |---|---|---|
 | `cmd/ci-measure` | available | Go tool: start latency, duration, minutes, step breakdown and estimated cost of workflow jobs, read from the GitHub REST API |
 | [`cdk/`](cdk/README.md) | available | CDK app (TypeScript): the cdk-github-runners deployment for ECS Fargate, its runner image, the GitHub App secret sync, cost guards |
+| [`boundary/`](boundary) | available | Go module `github.com/truvity/grun/boundary` (standard library only): the IAM permissions boundaries the stack needs, as policy documents generated from parameters |
 
 This repository is public and generic. It holds mechanism only: account ids,
 bucket names, hostnames and organisation-specific configuration are inputs
@@ -70,6 +71,70 @@ A person or an agent runs this; there is no pipeline that deploys. Before
 deploying, check the prerequisites in the "Before the first deploy" section of
 [`cdk/README.md`](cdk/README.md). `just cdk-synth-config <path>` synthesises a
 configuration without deploying it.
+
+## Permissions boundaries
+
+The stack runs under two IAM permissions boundaries, and this repository
+declares their shape so that the people who create them do not have to guess
+what the stack needs. The Go module `github.com/truvity/grun/boundary` (its own
+`go.mod`, standard library only, versioned by tags `boundary/vX.Y.Z`) renders
+each as a policy document from parameters. It knows no account, name or
+environment: every name is an input.
+
+| Boundary | Put on | Allows |
+|---|---|---|
+| **Runtime** (`boundary.Runtime`) | the stack's own roles, `<rolePrefix>*` (state machines, Lambda functions, ECS tasks) | everything except IAM writes; the two exceptions are `iam:PassRole` of the stack's roles to ECS tasks and creating the ECS service-linked role |
+| **Deploy** (`boundary.Deploy`) | the CDK bootstrap roles, `cdk-<qualifier>-*` (CloudFormation execution, deploy, file and image publishing, lookup) | an allow list: the stack's services, and in IAM only the stack's roles, created only with the Runtime boundary |
+
+The documents are the component's part only. The estate's own guards (no edit
+of a boundary policy, no removal of a boundary from a role or user) are
+appended by whatever creates the boundaries, so each document is held to 5,000
+characters minified (IAM's limit is 6,144) and the constructors return an
+error beyond that.
+
+```go
+p := boundary.Params{
+    RolePrefix:          "grun-",             // the stack's role names start with it
+    RuntimeBoundaryName: "<runtime boundary policy name>",
+    Qualifier:           "<cdk qualifier>",   // the CDK default is hnb659fds
+    ReadParameterPaths:  []string{"<ssm path>/*"}, // optional, no leading slash
+    ReadBuckets:         []string{"<bucket>"},     // optional
+    Partition:           "aws",
+}
+runtime, err := boundary.Runtime(p) // the document for RuntimeBoundaryName
+deploy, err := boundary.Deploy(p)   // the document for the bootstrap roles' boundary
+body, err := deploy.JSON()          // minified JSON, ready for a managed policy
+```
+
+To wire them in a consumer:
+
+1. **Create the boundaries** as customer managed policies from the two
+   documents (plus your own guards). `RuntimeBoundaryName` is the name you
+   give the Runtime policy; the Deploy policy takes any name you like.
+2. **Bootstrap CDK** with the Deploy boundary on the bootstrap roles:
+   `cdk bootstrap --custom-permissions-boundary <deploy boundary name>`. The
+   bootstrap then creates `cdk-<qualifier>-*` roles that carry it, and the
+   execution role can do no more than the boundary allows, whatever policy
+   it is given.
+3. **Set `iam.permissionsBoundary`** in the stack's configuration to the
+   Runtime boundary's name. Every role the stack creates then carries it, and
+   the Deploy boundary refuses to create a `<rolePrefix>*` role without it.
+
+The Deploy boundary lists services (CloudFormation, API Gateway, CloudWatch,
+CodeBuild, DynamoDB, ECS, EventBridge, Lambda, Logs, Secrets Manager, SNS, SQS,
+Step Functions and a few more) rather than resources, because CloudFormation
+generates most physical names. A change to the stack that adds a resource of
+another service would fail at deploy time, so `cdk/test/boundary-drift.test.ts`
+fails first: it compares every resource type of the synthesised example stack
+with the coverage the Go package writes (`just boundary-coverage`). When it
+fails, widen `boundary/deploy.go` (and `limitedTypes` in
+`boundary/coverage.go` for a narrowly allowed service), run
+`just boundary-golden`, review the diff, and update the boundary in the account
+before deploying.
+
+`boundary/testdata/earlier-runtime.json` is the Runtime boundary as an
+earlier tool rendered it; a test shows the Runtime document equals it except
+for the two guard statements the caller now appends.
 
 ## ci-measure
 
@@ -138,6 +203,7 @@ Tools come from [devbox](https://www.jetify.com/devbox); recipes from
 ```sh
 devbox shell
 just check   # build, test, lint, vuln, leak-canary, cdk-build, cdk-test, cdk-synth: what CI runs
+                # (test, lint and vuln cover the boundary module too)
 ```
 
 The CDK app is the one place this repository uses Node and npm rather than the
