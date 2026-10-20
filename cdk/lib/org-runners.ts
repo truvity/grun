@@ -1,5 +1,6 @@
 import {
   Duration,
+  Tags,
   aws_cloudwatch as cloudwatch,
   aws_cloudwatch_actions as cwActions,
   aws_ec2 as ec2,
@@ -8,8 +9,10 @@ import {
   aws_iam as iam,
   aws_lambda as lambda,
   aws_s3 as s3,
+  aws_kms as kms,
   aws_secretsmanager as secretsmanager,
   aws_sns as sns,
+  aws_ssm as ssm,
 } from 'aws-cdk-lib';
 import {
   FargateRunnerProvider,
@@ -20,7 +23,7 @@ import {
 } from '@cloudsnorkel/cdk-github-runners';
 import { Construct } from 'constructs';
 import { CustomDomainApiAccess } from './access';
-import { GrunConfig, OrgConfig, Shape, stackName, taskRoleName } from './config';
+import { GrunConfig, OrgConfig, Shape, costTags, stackName, taskRoleName } from './config';
 import { retention } from './runner-image';
 
 export interface OrgRunnersProps {
@@ -66,6 +69,10 @@ export class OrgRunners extends Construct {
   constructor(scope: Construct, id: string, props: OrgRunnersProps) {
     super(scope, id);
     const { config, org } = props;
+    const tagNames = costTags(config);
+    // Everything of this organisation carries the company tag (task
+    // definitions, log groups, the webhook, ...).
+    Tags.of(this).add(tagNames.companyKey, org.name);
     const env = runnerEnvironment(config, org);
     const logRetention = retention(config.logRetentionDays ?? 30);
 
@@ -83,6 +90,10 @@ export class OrgRunners extends Construct {
         ephemeralStorageGiB: shape.ephemeralStorageGiB ?? 50,
         spot: false,
         logRetention,
+        // The task definition carries the tag too and the state machine
+        // propagates it (PropagateTags), but the tag here rides on RunTask
+        // itself, so a task is tagged even if propagation is ever dropped.
+        tags: { [tagNames.companyKey]: org.name },
       });
       this.providers[shape.label] = provider;
 
@@ -90,6 +101,7 @@ export class OrgRunners extends Construct {
       // only handle on the task definition; there is no property for them.
       for (const [k, v] of Object.entries(env)) provider.container.addEnvironment(k, v);
       this.addClientCertificate(provider, config);
+      this.addSecretEnvironment(provider, config);
 
       // Task role: named for the pass-role rule of the permissions boundary,
       // with the organisation's policies from the config.
@@ -183,6 +195,29 @@ export class OrgRunners extends Construct {
   }
 
   /**
+   * Variables ECS fills from SSM Parameter Store when the task starts
+   * (runner.secretEnv). The library has no property for container secrets, so
+   * this uses the same container handle as the plain environment. The task
+   * definition holds the parameter reference only; the execution role (not the
+   * task role) is granted read on exactly these parameters, plus kms:Decrypt
+   * on runner.secretKmsKeyArn when it is set.
+   */
+  private addSecretEnvironment(provider: FargateRunnerProvider, config: GrunConfig): void {
+    const entries = Object.entries(config.runner?.secretEnv ?? {});
+    if (entries.length === 0) return;
+    const key = config.runner?.secretKmsKeyArn
+      ? kms.Key.fromKeyArn(this, `${provider.node.id}-secret-key`, config.runner.secretKmsKeyArn)
+      : undefined;
+    for (const [name, ref] of entries) {
+      const parameter = ssm.StringParameter.fromSecureStringParameterAttributes(this, `${provider.node.id}-${name}`, {
+        parameterName: parameterNameOf(ref),
+        encryptionKey: key,
+      });
+      provider.container.addSecret(name, ecs.Secret.fromSsmParameter(parameter));
+    }
+  }
+
+  /**
    * Mounts the build-farm client certificate as ca.pem, cert.pem and key.pem
    * in one directory. ECS can only inject a secret as an environment variable,
    * so an init container (the runner image itself) writes the three files to a
@@ -220,6 +255,13 @@ export class OrgRunners extends Construct {
     provider.container.addMountPoints({ sourceVolume: 'ci-buildkit-tls', containerPath: dir, readOnly: true });
     provider.container.addContainerDependencies({ container: init, condition: ecs.ContainerDependencyCondition.SUCCESS });
   }
+}
+
+/** The parameter name of a name or an ARN (the name keeps its leading slash when it has one). */
+export function parameterNameOf(ref: string): string {
+  if (!ref.startsWith('arn:')) return ref;
+  const i = ref.indexOf(':parameter/');
+  return ref.slice(i + ':parameter'.length);
 }
 
 export function pascal(s: string): string {

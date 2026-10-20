@@ -22,7 +22,7 @@ import {
   aws_sns_subscriptions as subs,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, stackName } from './config';
+import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, costTags, stackName } from './config';
 import { applyIdentityRules } from './iam';
 import { OrgRunners } from './org-runners';
 import { RunnerImage, retention } from './runner-image';
@@ -49,9 +49,11 @@ export class GrunStack extends Stack {
 
     // Every role of the stack: named grun-<env>-..., no path, with the boundary.
     applyIdentityRules(this, config.iam?.permissionsBoundary ?? DEFAULT_PERMISSIONS_BOUNDARY, name);
-    // Cost allocation: the budget below filters on these.
-    Tags.of(this).add('Project', 'grun');
-    Tags.of(this).add('GrunEnv', config.env);
+    // Cost allocation: the budget below filters on the component tag. Each
+    // organisation adds its own company tag (see OrgRunners).
+    const tagNames = costTags(config);
+    Tags.of(this).add(tagNames.componentKey, tagNames.componentValue);
+    Tags.of(this).add(tagNames.environmentKey, config.env);
 
     const shapes = config.shapes ?? DEFAULT_SHAPES;
 
@@ -244,6 +246,7 @@ export class GrunStack extends Stack {
   }
 
   private addBudget(config: GrunConfig, name: string): void {
+    const tag = costTags(config);
     this.alertTopic.addToResourcePolicy(
       new iam.PolicyStatement({
         principals: [new iam.ServicePrincipal('budgets.amazonaws.com')],
@@ -263,9 +266,10 @@ export class GrunStack extends Stack {
         budgetType: 'COST',
         timeUnit: 'DAILY',
         budgetLimit: { amount: config.costCap?.dailyBudgetUsd ?? 15, unit: 'USD' },
-        // Only what this stack's tagged resources cost. Needs the GrunEnv cost
-        // allocation tag to be activated in Billing.
-        costFilters: { TagKeyValue: [`user:GrunEnv$${config.env}`] },
+        // Everything tagged as this component. The budget lives in the
+        // environment's account, which is what scopes it to the environment.
+        // Needs the component cost allocation tag to be activated in Billing.
+        costFilters: { TagKeyValue: [`user:${tag.componentKey}$${tag.componentValue}`] },
       },
       notificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
     });

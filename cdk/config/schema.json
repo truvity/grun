@@ -171,6 +171,35 @@
         }
       }
     },
+    "costTags": {
+      "description": "Cost allocation tags. The stack carries <componentKey>=<componentValue> and <environmentKey>=<env>; each organisation's resources and runner tasks carry <companyKey>=<organisation name>. The daily budget filters on <componentKey>=<componentValue>. Activate the keys in Billing.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "componentKey": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:/=+@-]{0,127}$", "default": "component" },
+        "componentValue": { "type": "string", "pattern": "^[A-Za-z0-9_.:/=+@-]{1,256}$", "default": "ci" },
+        "environmentKey": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:/=+@-]{0,127}$", "default": "environment" },
+        "companyKey": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:/=+@-]{0,127}$", "default": "company" }
+      }
+    },
+    "runner": {
+      "description": "Settings of the runner tasks beyond the environment.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "secretEnv": {
+          "description": "Environment variables that ECS fills from SSM Parameter Store (SecureString) when a task starts. Maps the variable name to the parameter name or ARN. The task definition holds the parameter reference, never the value; the execution role may read exactly these parameters.",
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^(/?[A-Za-z0-9_.\\-/]+|arn:[^:]+:ssm:[^:]*:[^:]*:parameter/.+)$" },
+          "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]*$" }
+        },
+        "secretKmsKeyArn": {
+          "description": "ARN of the customer-managed KMS key that encrypts the secretEnv parameters. The execution role gets kms:Decrypt on it. Omit for the AWS-managed SSM key.",
+          "type": "string",
+          "pattern": "^arn:[^:]+:kms:[^:]+:[^:]+:key/.+"
+        }
+      }
+    },
     "costCap": {
       "type": "object",
       "additionalProperties": false,
