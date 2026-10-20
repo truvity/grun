@@ -29,14 +29,6 @@ func sorted(xs []float64) []float64 {
 	return out
 }
 
-func sum(xs []float64) float64 {
-	var s float64
-	for _, x := range xs {
-		s += x
-	}
-	return s
-}
-
 // Agg aggregates the jobs of one group (repo, repo+label, job name, ...).
 type Agg struct {
 	Total      int // all job attempts, including skipped and never-started

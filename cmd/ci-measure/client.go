@@ -76,7 +76,7 @@ func (c *Client) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("rate_limit: HTTP %d", resp.StatusCode)
@@ -170,7 +170,7 @@ func (c *Client) Get(ctx context.Context, path string, q url.Values, ttl time.Du
 			continue
 		}
 		body, rerr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		c.observe(resp.Header)
 		switch {
 		case resp.StatusCode == 200 && rerr == nil:
@@ -199,12 +199,12 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
