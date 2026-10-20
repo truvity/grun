@@ -1,0 +1,20 @@
+# Build output
+/bin/
+
+# On-disk cache of raw GitHub API responses (ci-measure)
+/.cache/
+
+# Measurement reports are generated and kept out of git
+/reports/
+
+# Devbox
+.devbox/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Node / CDK (the CDK app lands here later)
+node_modules/
+cdk.out/
