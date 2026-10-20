@@ -1,0 +1,182 @@
+// The environment configuration: its type, its defaults and the loader.
+//
+// The file is supplied at synth time (`-c config=<path>`) and holds every
+// particular: accounts, hostnames, ARNs, endpoints. config/schema.json is the
+// contract for the file; the interfaces below are the same contract for the
+// code. test/config.test.ts keeps the two in step.
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import Ajv from 'ajv';
+import { parse } from 'yaml';
+
+export interface Shape {
+  /** The label a job puts in runs-on. */
+  label: string;
+  vcpu: number;
+  memoryGiB: number;
+  ephemeralStorageGiB?: number;
+}
+
+export interface OrgConfig {
+  name: string;
+  sluisParameter: string;
+  webhook: { domainName: string; certificateArn: string };
+  taskRole?: { managedPolicyArns?: string[]; statements?: Record<string, unknown>[] };
+  environment?: Record<string, string>;
+  warm?: boolean;
+}
+
+export interface GrunConfig {
+  env: string;
+  region: string;
+  account?: string;
+  network: {
+    vpcId: string;
+    availabilityZones: string[];
+    publicSubnetIds: string[];
+    securityGroupIds?: string[];
+  };
+  iam?: { permissionsBoundary?: string };
+  sluis: { readerRoleArn: string; region?: string; syncIntervalMinutes?: number };
+  runnerImage: {
+    repository: string;
+    version: string;
+    runnerVersion?: string;
+    rebuildIntervalDays?: number;
+    computeType?: 'BUILD_GENERAL1_SMALL' | 'BUILD_GENERAL1_LARGE';
+    cloudWatchAgent?: boolean;
+    extraCertificates?: { path?: string; pem?: string; name?: string };
+  };
+  shapes?: Shape[];
+  requireSelfHostedLabel?: boolean;
+  logRetentionDays?: number;
+  runnerEnvironment?: {
+    goproxy?: string;
+    npmRegistry?: string;
+    bazelRemoteCache?: string;
+    remoteBuilders?: string;
+    extra?: Record<string, string>;
+  };
+  buildkit?: {
+    tlsDir?: string;
+    tlsServerName?: string;
+    clientCertSecret?: { arn: string; caKey?: string; certKey?: string; keyKey?: string };
+  };
+  costCap?: { maxConcurrentTasks?: number; onExceed?: 'skip' | 'defer'; dailyBudgetUsd?: number };
+  alerts: { emails: string[] };
+  warm?: {
+    startHourUtc?: number;
+    startMinuteUtc?: number;
+    weekDays?: string;
+    durationHours?: number;
+    pools: { shape: string; count: number }[];
+  };
+  webhook: { mtls: { truststoreBucket: string; truststoreKey: string; truststoreVersion?: string } };
+  reports?: { bucketName?: string; taskRolesCanWrite?: boolean };
+  dashboard?: boolean;
+  orgs: OrgConfig[];
+}
+
+/** The shapes the project runs with unless the file says otherwise. */
+export const DEFAULT_SHAPES: Shape[] = [
+  { label: 'fg-large', vcpu: 4, memoryGiB: 24, ephemeralStorageGiB: 100 },
+  { label: 'fg-medium', vcpu: 2, memoryGiB: 14, ephemeralStorageGiB: 50 },
+  { label: 'fg-small', vcpu: 1, memoryGiB: 6, ephemeralStorageGiB: 50 },
+];
+
+export const DEFAULT_PERMISSIONS_BOUNDARY = 'pb@tech-grun';
+
+/** IAM role names are at most 64 characters. */
+export const MAX_ROLE_NAME = 64;
+
+export function stackName(config: GrunConfig): string {
+  return `grun-${config.env}`;
+}
+
+export function schemaPath(): string {
+  return path.join(__dirname, '..', 'config', 'schema.json');
+}
+
+/** Everything the schema cannot say. Returns the problems found. */
+export function crossChecks(config: GrunConfig): string[] {
+  const problems: string[] = [];
+  const shapes = config.shapes ?? DEFAULT_SHAPES;
+  const labels = shapes.map((s) => s.label);
+  if (new Set(labels).size !== labels.length) problems.push('shapes: duplicate label');
+
+  const names = config.orgs.map((o) => o.name);
+  if (new Set(names).size !== names.length) problems.push('orgs: duplicate name');
+  const domains = config.orgs.map((o) => o.webhook.domainName);
+  if (new Set(domains).size !== domains.length) problems.push('orgs: duplicate webhook.domainName');
+
+  if (config.network.availabilityZones.length !== config.network.publicSubnetIds.length) {
+    problems.push('network: availabilityZones and publicSubnetIds must have the same length');
+  }
+  for (const pool of config.warm?.pools ?? []) {
+    if (!labels.includes(pool.shape)) problems.push(`warm.pools: unknown shape ${pool.shape}`);
+  }
+  for (const s of shapes) {
+    if (s.ephemeralStorageGiB !== undefined && s.ephemeralStorageGiB < 21) {
+      problems.push(`shapes.${s.label}: ephemeralStorageGiB below the Fargate minimum of 21`);
+    }
+  }
+  // Role names: grun-<env>-<org>-<shape>-task must fit.
+  for (const org of config.orgs) {
+    for (const s of shapes) {
+      const name = taskRoleName(config, org.name, s.label);
+      if (name.length > MAX_ROLE_NAME) problems.push(`role name too long (${name.length} > ${MAX_ROLE_NAME}): ${name}`);
+    }
+  }
+  return problems;
+}
+
+export function taskRoleName(config: GrunConfig, org: string, shapeLabel: string): string {
+  return `${stackName(config)}-${org}-${shapeLabel}-task`;
+}
+
+export function validate(raw: unknown): GrunConfig {
+  const ajv = new Ajv({ allErrors: true, useDefaults: false, strict: false });
+  const schema = JSON.parse(fs.readFileSync(schemaPath(), 'utf8'));
+  const check = ajv.compile(schema);
+  if (!check(raw)) {
+    const lines = (check.errors ?? []).map((e) => `  ${e.instancePath || '/'} ${e.message}`);
+    throw new Error(`invalid grun config:\n${lines.join('\n')}`);
+  }
+  const config = raw as GrunConfig;
+  const problems = crossChecks(config);
+  if (problems.length > 0) throw new Error(`invalid grun config:\n${problems.map((p) => `  ${p}`).join('\n')}`);
+  return config;
+}
+
+/**
+ * Reads and validates a config file. Relative paths inside it (the private CA)
+ * are resolved against the file's directory by `resolveCaFile`.
+ */
+export function loadConfig(file: string): GrunConfig {
+  const text = fs.readFileSync(file, 'utf8');
+  return validate(parse(text));
+}
+
+/**
+ * The private CA as a file on disk, from either its path (relative to the
+ * config file) or its PEM content (written to a content-addressed temp file).
+ */
+export function resolveCaFile(
+  ca: NonNullable<GrunConfig['runnerImage']['extraCertificates']>,
+  configFile: string | undefined,
+): string {
+  if (ca.path) {
+    const base = configFile ? path.dirname(path.resolve(configFile)) : process.cwd();
+    const resolved = path.resolve(base, ca.path);
+    if (!fs.existsSync(resolved)) throw new Error(`runnerImage.extraCertificates.path not found: ${resolved}`);
+    return resolved;
+  }
+  const pem = ca.pem as string;
+  const dir = path.join(os.tmpdir(), `grun-ca-${crypto.createHash('sha256').update(pem).digest('hex').slice(0, 16)}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'ca.crt');
+  fs.writeFileSync(file, pem.endsWith('\n') ? pem : `${pem}\n`, { mode: 0o644 });
+  return file;
+}

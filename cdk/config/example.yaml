@@ -1,0 +1,109 @@
+# Example environment configuration for grun. Every value here is a
+# placeholder. Real configuration lives in the operator's own repository and is
+# passed at synth time:
+#
+#   cdk deploy -c config=<path>/grun/<env>.yaml
+#
+# The schema is config/schema.json; `just synth` synthesises this file.
+
+env: example            # the stack is grun-example; every IAM role is grun-example-...
+region: eu-central-1
+# account: "..."        # optional; default: the account of the credentials
+
+network:                # an existing VPC; tasks run in its public subnets with a public IP
+  vpcId: vpc-0example0000000000
+  availabilityZones: [eu-central-1a, eu-central-1b, eu-central-1c]
+  publicSubnetIds: [subnet-0example00000001, subnet-0example00000002, subnet-0example00000003]
+  # securityGroupIds: [sg-0example0000000000]   # default: the stack creates one
+
+iam:
+  permissionsBoundary: pb@tech-grun
+
+sluis:                  # where the GitHub Apps come from
+  readerRoleArn: arn:partition:iam::account-id:role/example-reader
+  region: eu-central-1
+  syncIntervalMinutes: 5
+
+runnerImage:
+  # Base image through the account's ECR pull-through cache.
+  repository: account-id.dkr.ecr.eu-central-1.amazonaws.com/ghcr/example-org/ci-plane/runner
+  version: v0.0.0
+  runnerVersion: latest
+  rebuildIntervalDays: 7
+  # extraCertificates:
+  #   path: private-ca.pem      # relative to this file
+  #   name: private-ca
+  extraCertificates:
+    path: example-ca.pem
+
+requireSelfHostedLabel: false
+logRetentionDays: 30
+
+runnerEnvironment:      # read by the shared CI workflows
+  goproxy: https://goproxy.example.test
+  npmRegistry: https://npm.example.test
+  bazelRemoteCache: grpcs://bazel.example.test:443
+  remoteBuilders: tcp://builder.example.test:1234
+  extra: {}
+
+buildkit:
+  tlsDir: /etc/ci-buildkit-tls
+  tlsServerName: buildkitd.example.test
+  clientCertSecret:     # JSON secret with the three PEMs
+    arn: arn:partition:secretsmanager:eu-central-1:account-id:secret:example-buildkit-client-AbCdEf
+    caKey: ca
+    certKey: cert
+    keyKey: key
+
+costCap:
+  maxConcurrentTasks: 20
+  onExceed: skip
+  dailyBudgetUsd: 15
+
+alerts:
+  emails: [ci-alerts@example.test]
+
+warm:                   # 08:00-19:00 Amsterdam, as a UTC window that covers both summer and winter time
+  startHourUtc: 6
+  startMinuteUtc: 0
+  weekDays: MON-FRI
+  durationHours: 12
+  pools:
+    - { shape: fg-large, count: 2 }
+    - { shape: fg-small, count: 1 }
+
+webhook:
+  mtls:                 # Cloudflare origin-pull CA bundle (PEM) in S3
+    truststoreBucket: example-truststore-bucket
+    truststoreKey: cloudflare-origin-pull-ca.pem
+
+reports:
+  taskRolesCanWrite: true
+
+orgs:
+  - name: acme
+    sluisParameter: /example/path/acme-grun
+    webhook:
+      domainName: runners-acme.example.test
+      certificateArn: arn:partition:acm:eu-central-1:account-id:certificate/example-acme
+    taskRole:
+      managedPolicyArns: []
+      statements:
+        - Effect: Allow
+          Action: [ecr:GetAuthorizationToken]
+          Resource: "*"
+        - Effect: Allow
+          Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage, ecr:InitiateLayerUpload, ecr:UploadLayerPart, ecr:CompleteLayerUpload, ecr:PutImage]
+          Resource: "arn:partition:ecr:eu-central-1:account-id:repository/example/*"
+        - Effect: Allow
+          Action: [s3:GetObject, s3:PutObject, s3:ListBucket]
+          Resource: ["arn:partition:s3:::example-ci-cache", "arn:partition:s3:::example-ci-cache/*"]
+    warm: true
+  - name: widgets
+    sluisParameter: /example/path/widgets-grun
+    webhook:
+      domainName: runners-widgets.example.test
+      certificateArn: arn:partition:acm:eu-central-1:account-id:certificate/example-widgets
+    environment:
+      EXAMPLE_FLAG: "1"
+    warm: false

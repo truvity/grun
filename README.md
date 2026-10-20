@@ -7,13 +7,69 @@ GitHub Actions self-hosted runners on AWS ECS Fargate, deployed with
 | Part | Status | What it is |
 |---|---|---|
 | `cmd/ci-measure` | available | Go tool: start latency, duration, minutes, step breakdown and estimated cost of workflow jobs, read from the GitHub REST API |
-| CDK app (TypeScript) | planned | The cdk-github-runners deployment for ECS Fargate |
+| [`cdk/`](cdk/README.md) | available | CDK app (TypeScript): the cdk-github-runners deployment for ECS Fargate, its runner image, the GitHub App secret sync, cost guards |
 
 This repository is public and generic. It holds mechanism only: account ids,
 bucket names, hostnames and organisation-specific configuration are inputs
 supplied by the caller and live in the operator's own configuration
 repository, not here. `hack/leak-canary.sh` runs in CI and fails the build if a
 particular slips in.
+
+## The CDK app
+
+`cdk/` deploys one stack, `grun-<env>`, with one
+[cdk-github-runners](https://github.com/CloudSnorkel/cdk-github-runners)
+`GitHubRunners` construct per GitHub organisation. Runners are ephemeral ECS
+Fargate ARM tasks in the public subnets of an existing VPC (no NAT), started by
+`workflow_job` webhooks.
+
+What it builds, in short:
+
+- **Providers**: `fg-large` (4 vCPU / 24 GB), `fg-medium` (2 / 14), `fg-small`
+  (1 / 6) per organisation, each with ephemeral storage sized for builds and a
+  task role per organisation whose policies come from the configuration.
+- **Runner image**: cdk-github-runners' CodeBuild image builder (Linux arm64)
+  on top of [ci-plane](https://github.com/truvity/ci-plane)'s runner image, taken
+  through the account's ECR pull-through cache, plus the runner layout, job
+  hooks, CloudWatch agent and (optionally) a private CA. A new ci-plane version
+  in the configuration rebuilds the image on the next deploy; a weekly schedule
+  keeps the GitHub runner current. cdk-github-runners indexes the pushed image
+  for SOCI.
+- **GitHub Apps from elsewhere**: a scheduled Lambda (every 5 minutes) assumes a
+  reader role, reads each organisation's App from SSM and writes it into the
+  Secrets Manager secrets cdk-github-runners reads. The setup wizard is off.
+- **Webhook**: an API Gateway custom domain per organisation, mutual TLS (for
+  Cloudflare Authenticated Origin Pulls), default endpoint disabled.
+- **Guards**: a provider-selector Lambda routes by label and refuses a job when
+  the cluster already runs the configured number of tasks; a daily AWS Budget
+  with alerts; alarms; log retention everywhere.
+- **Identity**: every IAM role is `grun-<env>-...` with no path and carries the
+  permissions boundary stack-wide.
+- **Warm capacity**: runners started ahead of demand on a weekly schedule.
+- **Reports bucket** (no expiry) for `ci-measure`.
+
+Details, the full configuration reference and the known limits are in
+[`cdk/README.md`](cdk/README.md).
+
+### How deploy works
+
+The repository holds mechanism only. An environment's configuration (accounts,
+VPC and subnet ids, ECR registry, endpoints, certificates, policies) lives in
+the operator's own configuration repository and is passed at synth time:
+
+```sh
+# from a checkout of the configuration repository, in an environment with
+# credentials for the target account
+cd <path-to>/grun/cdk
+npm ci
+npx cdk diff   -c config=<path-to-gitops>/cfg/grun/devel.yaml
+npx cdk deploy -c config=<path-to-gitops>/cfg/grun/devel.yaml
+```
+
+A person or an agent runs this; there is no pipeline that deploys. Before
+deploying, check the prerequisites in the "Before the first deploy" section of
+[`cdk/README.md`](cdk/README.md). `just cdk-synth-config <path>` synthesises a
+configuration without deploying it.
 
 ## ci-measure
 
@@ -81,8 +137,14 @@ Tools come from [devbox](https://www.jetify.com/devbox); recipes from
 
 ```sh
 devbox shell
-just check   # build, test, lint, vuln, leak-canary: what CI runs
+just check   # build, test, lint, vuln, leak-canary, cdk-build, cdk-test, cdk-synth: what CI runs
 ```
+
+The CDK app is the one place this repository uses Node and npm rather than the
+estate's usual JavaScript tooling: CDK in TypeScript is what cdk-github-runners
+is built for. Dependencies are pinned to exact versions in
+`cdk/package-lock.json`; `just cdk-install` installs them with `npm ci`. The Go
+recipes name `./cmd/...` so that they never walk `cdk/node_modules`.
 
 ## Licence
 
