@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   recipes:
-    uses: truvity/ci-workflows/.github/workflows/check.yaml@7da71fcefe15b98ac871aebeb8c66e84fae2549f
+    uses: truvity/ci-workflows/.github/workflows/check.yaml@d4350d573f67de8f7a145a4de94c392c6b43fd8c # v5.0.0
     with:
       # leak-canary is the standing proof that this repository carries no
       # account ids, ARNs, hostnames or ticket keys, which is the reason it
