@@ -64,6 +64,15 @@ export interface GrunConfig {
     tlsServerName?: string;
     clientCertSecret?: { arn: string; caKey?: string; certKey?: string; keyKey?: string };
   };
+  /** Names of the cost allocation tags and the component value. All optional. */
+  costTags?: { componentKey?: string; componentValue?: string; environmentKey?: string; companyKey?: string };
+  /** Settings of the runner tasks beyond the environment. */
+  runner?: {
+    /** ENV_NAME -> SSM parameter name or ARN, injected by ECS at task start. */
+    secretEnv?: Record<string, string>;
+    /** KMS key (ARN) that encrypts those parameters, when it is not the AWS-managed one. */
+    secretKmsKeyArn?: string;
+  };
   costCap?: { maxConcurrentTasks?: number; onExceed?: 'skip' | 'defer'; dailyBudgetUsd?: number };
   alerts: { emails: string[] };
   warm?: {
@@ -87,6 +96,18 @@ export const DEFAULT_SHAPES: Shape[] = [
 ];
 
 export const DEFAULT_PERMISSIONS_BOUNDARY = 'pb@tech-grun';
+
+/** The cost allocation tags: lowercase, in the estate's key style. */
+export const DEFAULT_COST_TAGS = {
+  componentKey: 'component',
+  componentValue: 'ci',
+  environmentKey: 'environment',
+  companyKey: 'company',
+} as const;
+
+export function costTags(config: GrunConfig): Required<NonNullable<GrunConfig['costTags']>> {
+  return { ...DEFAULT_COST_TAGS, ...(config.costTags ?? {}) };
+}
 
 /** IAM role names are at most 64 characters. */
 export const MAX_ROLE_NAME = 64;
@@ -122,6 +143,18 @@ export function crossChecks(config: GrunConfig): string[] {
       problems.push(`shapes.${s.label}: ephemeralStorageGiB below the Fargate minimum of 21`);
     }
   }
+  // A variable is either injected from SSM or set in plain text, not both.
+  const secretNames = Object.keys(config.runner?.secretEnv ?? {});
+  const plain = (org: OrgConfig) => [
+    ...Object.keys(runnerEnvNames(config)),
+    ...Object.keys(config.runnerEnvironment?.extra ?? {}),
+    ...Object.keys(org.environment ?? {}),
+  ];
+  for (const org of config.orgs) {
+    for (const n of secretNames) {
+      if (plain(org).includes(n)) problems.push(`runner.secretEnv.${n}: also set as plain environment (org ${org.name})`);
+    }
+  }
   // Role names: grun-<env>-<org>-<shape>-task must fit.
   for (const org of config.orgs) {
     for (const s of shapes) {
@@ -130,6 +163,20 @@ export function crossChecks(config: GrunConfig): string[] {
     }
   }
   return problems;
+}
+
+/** The variables the typed runnerEnvironment and buildkit settings produce. */
+function runnerEnvNames(config: GrunConfig): Record<string, true> {
+  const e = config.runnerEnvironment ?? {};
+  const bk = config.buildkit;
+  const names: Record<string, true> = {};
+  if (e.goproxy) names.CI_RUNNER_GOPROXY = true;
+  if (e.npmRegistry) names.CI_RUNNER_NPM_REGISTRY = true;
+  if (e.bazelRemoteCache) names.CI_RUNNER_BAZEL_REMOTE_CACHE = true;
+  if (e.remoteBuilders) names.CI_RUNNER_REMOTE_BUILDERS = true;
+  if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
+  if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
+  return names;
 }
 
 export function taskRoleName(config: GrunConfig, org: string, shapeLabel: string): string {

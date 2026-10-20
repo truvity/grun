@@ -55,6 +55,22 @@ buildkit:
     certKey: cert
     keyKey: key
 
+costTags:               # cost allocation tags; these are the defaults, all optional
+  componentKey: component       # stack tag: component=ci; the budget filters on it
+  componentValue: ci
+  environmentKey: environment   # stack tag: environment=<env>
+  companyKey: company           # each organisation's resources and runner tasks: company=<org name>
+
+runner:
+  # ECS fills these environment variables from SSM Parameter Store (SecureString)
+  # when a task starts. The task definition holds the reference, not the value.
+  # The execution role may read exactly these parameters.
+  secretEnv:
+    CI_BUILDKIT_TLS_CA_PEM: /example/ci/buildkit-client/ca
+    CI_BUILDKIT_TLS_CERT_PEM: /example/ci/buildkit-client/cert
+    CI_BUILDKIT_TLS_KEY_PEM: arn:partition:ssm:eu-central-1:account-id:parameter/example/ci/buildkit-client/key
+  # secretKmsKeyArn: arn:partition:kms:eu-central-1:account-id:key/example-key
+
 costCap:
   maxConcurrentTasks: 20
   onExceed: skip

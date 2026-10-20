@@ -368,7 +368,7 @@ describe('selector, cap and budget', () => {
     const b = resources(s.json, 'AWS::Budgets::Budget')[0][1].Properties;
     expect(b.Budget.TimeUnit).toBe('DAILY');
     expect(b.Budget.BudgetLimit).toEqual({ Amount: 15, Unit: 'USD' });
-    expect(b.Budget.CostFilters.TagKeyValue).toEqual(['user:GrunEnv$example']);
+    expect(b.Budget.CostFilters.TagKeyValue).toEqual(['user:component$ci']);
     expect(b.NotificationsWithSubscribers.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -379,6 +379,130 @@ describe('selector, cap and budget', () => {
     const f = resources(t.json, 'AWS::Lambda::Function').find(([, x]) => /Routes a job/.test(x.Properties.Description ?? ''))![1];
     expect(f.Properties.Environment.Variables).toMatchObject({ MAX_CONCURRENT_TASKS: '5', ON_EXCEED: 'defer' });
     expect(resources(t.json, 'AWS::Budgets::Budget')[0][1].Properties.Budget.BudgetLimit.Amount).toBe(7);
+  });
+});
+
+describe('cost tags', () => {
+  // CloudFormation tags are a list of Key/Value, or a map on some resource types.
+  const tagsOf = (r: any): Record<string, string> => {
+    const t = r.Properties?.Tags ?? [];
+    return Array.isArray(t) ? Object.fromEntries(t.map((x: any) => [x.Key, x.Value])) : t;
+  };
+
+  it('tags every task definition with its organisation, the component and the environment', () => {
+    const defs = resources(s.json, 'AWS::ECS::TaskDefinition');
+    expect(defs).toHaveLength(6);
+    for (const [id, d] of defs) {
+      const org = id.startsWith('acme') ? 'acme' : 'widgets';
+      expect(tagsOf(d), id).toMatchObject({ company: org, component: 'ci', environment: 'example' });
+    }
+    expect(defs.filter(([id]) => id.startsWith('acme'))).toHaveLength(3);
+    expect(defs.filter(([id]) => id.startsWith('widgets'))).toHaveLength(3);
+  });
+
+  it('drops the old Project and GrunEnv tags', () => {
+    for (const [id, r] of Object.entries<any>(s.json.Resources)) {
+      expect(Object.keys(tagsOf(r)), id).not.toContain('Project');
+      expect(Object.keys(tagsOf(r)), id).not.toContain('GrunEnv');
+    }
+  });
+
+  it('sends the company tag with RunTask, and propagates the task definition\'s tags', () => {
+    const machines = resources(s.json, 'AWS::StepFunctions::StateMachine');
+    expect(machines).toHaveLength(2);
+    for (const [id, m] of machines) {
+      const def = definition(m);
+      expect(def, id).toContain('PropagateTags');
+      expect(def, id).toContain('TASK_DEFINITION');
+    }
+    // the tag rides on the provider, per organisation
+    const byOrg = (org: string) => machines.map(([, m]) => definition(m)).filter((d) => d.includes(`"Key":"company","Value":"${org}"`));
+    expect(byOrg('acme')).toHaveLength(1);
+    expect(byOrg('widgets')).toHaveLength(1);
+  });
+
+  it('takes the key names and the component value from the config', () => {
+    const t = synth((c) => {
+      c.costTags = { componentKey: 'Component', componentValue: 'runners', environmentKey: 'Env', companyKey: 'Company' };
+    });
+    for (const [id, d] of resources(t.json, 'AWS::ECS::TaskDefinition')) {
+      expect(tagsOf(d), id).toMatchObject({ Component: 'runners', Env: 'example' });
+      expect(tagsOf(d).Company, id).toMatch(/^(acme|widgets)$/);
+      expect(Object.keys(tagsOf(d)), id).not.toContain('company');
+    }
+    expect(resources(t.json, 'AWS::Budgets::Budget')[0][1].Properties.Budget.CostFilters.TagKeyValue).toEqual(['user:Component$runners']);
+  });
+});
+
+describe('runner secrets from SSM', () => {
+  const secretEnv = {
+    CI_BUILDKIT_TLS_CA_PEM: '/example/ci/buildkit-client/ca',
+    CI_BUILDKIT_TLS_CERT_PEM: '/example/ci/buildkit-client/cert',
+    CI_BUILDKIT_TLS_KEY_PEM: 'arn:partition:ssm:eu-central-1:account-id:parameter/example/ci/buildkit-client/key',
+  };
+  const runnerOf = (json: any, idPrefix: string) =>
+    resources(json, 'AWS::ECS::TaskDefinition')
+      .find(([id]) => id.startsWith(idPrefix))![1]
+      .Properties.ContainerDefinitions.find((c: any) => c.Name === 'runner');
+  const execPolicy = (json: any, idPrefix: string) =>
+    resources(json, 'AWS::IAM::Policy').find(([id]) => new RegExp(`^${idPrefix}taskExecutionRoleDefaultPolicy`).test(id))![1].Properties.PolicyDocument
+      .Statement as any[];
+
+  it('injects the parameters into every task of every organisation, as secrets and not as plain environment', () => {
+    for (const prefix of ['acmefglarge', 'acmefgsmall', 'widgetsfgmedium']) {
+      const runner = runnerOf(s.json, prefix);
+      expect(runner.Secrets.map((x: any) => x.Name).sort(), prefix).toEqual(Object.keys(secretEnv).sort());
+      const plain = runner.Environment.map((e: any) => e.Name);
+      for (const n of Object.keys(secretEnv)) expect(plain, prefix).not.toContain(n);
+      // the value in the task definition is a reference to the parameter
+      for (const x of runner.Secrets) expect(text(x.ValueFrom), prefix).toContain(':parameter/example/ci/buildkit-client/');
+    }
+  });
+
+  it('leaves the init container and the other containers without them', () => {
+    const def = resources(s.json, 'AWS::ECS::TaskDefinition').find(([id]) => id.startsWith('acmefglarge'))![1];
+    const init = def.Properties.ContainerDefinitions.find((c: any) => c.Name === 'tls-init');
+    expect(init.Secrets.map((x: any) => x.Name).sort()).toEqual(['TLS_CA', 'TLS_CERT', 'TLS_KEY']);
+  });
+
+  it('lets the execution role read exactly those parameters, and the task role none', () => {
+    for (const prefix of ['acme', 'widgets']) {
+      const stmts = execPolicy(s.json, `${prefix}fglarge`);
+      const ssmStmts = stmts.filter((st) => ([] as string[]).concat(st.Action).some((a) => a.startsWith('ssm:')));
+      expect(ssmStmts.length, prefix).toBeGreaterThan(0);
+      const resourcesText = text(ssmStmts.map((st) => st.Resource));
+      for (const n of ['buildkit-client/ca', 'buildkit-client/cert', 'buildkit-client/key']) expect(resourcesText, prefix).toContain(n);
+      expect(resourcesText, prefix).not.toContain('"*"');
+      expect(text(ssmStmts.map((st) => st.Action)), prefix).toContain('ssm:GetParameters');
+    }
+    const taskPolicy = text(resources(s.json, 'AWS::IAM::Policy').filter(([id]) => /^acmefglargetaskTaskRoleDefaultPolicy/.test(id)));
+    expect(taskPolicy).not.toContain('ssm:');
+  });
+
+  it('does not grant KMS without a key, and decrypts with the given key only', () => {
+    const none = synth((c) => {
+      c.runner = { secretEnv };
+    });
+    expect(text(execPolicy(none.json, 'acmefglarge'))).not.toContain('kms:');
+    const keyArn = 'arn:partition:kms:eu-central-1:account-id:key/example-key';
+    const withKey = synth((c) => {
+      c.runner = { secretEnv, secretKmsKeyArn: keyArn };
+    });
+    const kmsStmts = execPolicy(withKey.json, 'acmefglarge').filter((st) => ([] as string[]).concat(st.Action).some((a) => a.startsWith('kms:')));
+    expect(text(kmsStmts.map((st) => st.Action))).toContain('kms:Decrypt');
+    expect(text(kmsStmts.map((st) => st.Resource))).toBe(text([keyArn]));
+  });
+
+  it('adds nothing without runner.secretEnv', () => {
+    const t = synth((c) => {
+      c.runner = undefined;
+    });
+    expect(runnerOf(t.json, 'acmefglarge').Secrets).toBeUndefined();
+  });
+
+  it('keeps parameter values out of the template', () => {
+    // the template only ever names parameters; no value is known to the stack
+    expect(text(runnerOf(s.json, 'acmefglarge').Secrets)).not.toContain('BEGIN');
   });
 });
 

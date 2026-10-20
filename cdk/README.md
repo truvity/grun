@@ -52,8 +52,17 @@ configuration names them):
    fetches the trust store during the deployment.
 6. Optionally, a JSON secret with the build farm's client certificate
    (`buildkit.clientCertSecret`) and the private CA PEM (`runnerImage.extraCertificates`).
-7. In Billing, activate the cost allocation tag `GrunEnv`. The daily budget
-   filters on it; without it the budget sees no spend.
+7. In Billing, activate the cost allocation tags `component` and `company`
+   (and `environment`, if you want to break spend down by it) in the account
+   that runs the stack. The key names are `costTags.componentKey`,
+   `costTags.companyKey` and `costTags.environmentKey`; activate whatever the
+   configuration says if it differs from these defaults. The daily budget
+   filters on `<componentKey>=<componentValue>` (default `component=ci`);
+   without the activation it sees no spend. Activation takes up to a day and
+   only covers spend from then on.
+8. If you use `runner.secretEnv`: the SSM SecureString parameters it names, in
+   the stack's account and region, filled by whatever owns them. They need not
+   exist at deploy time, but a task fails to start while one is missing.
 
 After the deploy:
 
@@ -101,6 +110,11 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerEnvironment.extra` | | more variables for every task |
 | `buildkit.tlsDir` | `/etc/ci-buildkit-tls` | `CI_BUILDKIT_TLS_DIR`; holds `ca.pem`, `cert.pem`, `key.pem` |
 | `buildkit.tlsServerName` | | `CI_BUILDKIT_TLS_SERVERNAME` |
+| `runner.secretEnv` | | `{ENV_NAME: SSM parameter name or ARN}`: ECS injects each as that environment variable when a task starts (see below) |
+| `runner.secretKmsKeyArn` | | key that encrypts those parameters; the execution role gets `kms:Decrypt` on it. Omit for the AWS-managed SSM key |
+| `costTags.componentKey`, `componentValue` | `component`, `ci` | the stack tag `<componentKey>=<componentValue>`; the daily budget filters on it |
+| `costTags.environmentKey` | `environment` | the stack tag `<environmentKey>=<env>` |
+| `costTags.companyKey` | `company` | each organisation's resources and runner tasks carry `<companyKey>=<organisation name>` |
 | `buildkit.clientCertSecret.arn` | | JSON secret; with `caKey`, `certKey`, `keyKey` naming its fields (defaults `ca`, `cert`, `key`) |
 | `costCap.maxConcurrentTasks` | 20 | task cap |
 | `costCap.onExceed` | `skip` | `skip` or `defer` (see below) |
@@ -155,6 +169,39 @@ shared with the runner container and exits; the runner container waits for it.
 The files are readable by every process in the task, which is the point: the
 job's tools are the clients of the build farm.
 
+**Cost tags.** The stack carries `component=ci` and `environment=<env>`; every
+resource under an organisation carries `company=<organisation name>`, and so
+does every runner task: the task definition has the tag, the state machine
+propagates it (`PropagateTags: TASK_DEFINITION`), and the provider also sends it
+with `RunTask` itself, so a library change that stopped propagating would not
+untag the tasks. A test asserts the propagation. Tags show in Cost Explorer once
+activated in Billing (step 7 above).
+
+**Secrets from SSM.** `runner.secretEnv` maps a variable name to an SSM
+parameter (SecureString), for example a build farm client certificate that
+cert-manager issues and an external secrets operator writes to the Parameter
+Store:
+
+```yaml
+runner:
+  secretEnv:
+    CI_BUILDKIT_TLS_CA_PEM: /<path>/ca
+    CI_BUILDKIT_TLS_CERT_PEM: /<path>/cert
+    CI_BUILDKIT_TLS_KEY_PEM: /<path>/key
+  secretKmsKeyArn: arn:<partition>:kms:<region>:<account>:key/<id>   # optional
+```
+
+Each entry becomes a container `secrets` entry of the runner container in every
+task definition of every organisation. ECS reads the parameter when the task
+starts and puts the value in the container's environment; the task definition
+holds only the parameter's ARN, so the value is in no template, no plain
+environment and no log. The task execution role (not the task role, so jobs
+cannot read the parameters) gets `ssm:GetParameters` and friends on exactly
+these parameters, and `kms:Decrypt` on `secretKmsKeyArn` when it is set. An ARN
+is reduced to its parameter name in the stack's own account and region. Plain
+variables, such as `CI_BUILDKIT_TLS_SERVERNAME`, go in `buildkit.tlsServerName`
+or `runnerEnvironment.extra`; the same name in both places is refused.
+
 **Provider selector.** Called by the webhook for each queued job. It picks the
 provider whose labels contain the job's shape label (the larger one if a job
 names two; cdk-github-runners' default choice if it names none), then counts the
@@ -201,9 +248,9 @@ cdk-github-runners' `ScheduledWarmRunner` does not use.
   index is to be confirmed by measuring a cold start. The index is skipped when
   the image carries a `DISABLE_SOCI` label.
 - **Scheduled warm runners** have no deploy-time fill, and take UTC schedules.
-- **Task environment**: there is no property for extra environment variables or
-  extra containers on the Fargate provider; the app uses the provider's
-  `container` and `task` fields, which the library marks as internal. A library
+- **Task environment**: there is no property for extra environment variables,
+  container secrets or extra containers on the Fargate provider; the app uses
+  the provider's `container` and `task` fields (`addEnvironment`, `addSecret`), which the library marks as internal. A library
   upgrade may need this code adjusted (the tests will say).
 
 ## Development
