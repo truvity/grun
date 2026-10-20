@@ -1,0 +1,281 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "grun-config",
+  "title": "grun environment configuration",
+  "description": "One file per environment. Supplied at synth time with -c config=<path>. Every particular (accounts, hostnames, ARNs, endpoints) lives here, not in this repository.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["env", "region", "network", "sluis", "runnerImage", "orgs", "webhook", "alerts"],
+  "properties": {
+    "env": {
+      "description": "Environment name. The stack is called grun-<env> and every IAM role is named grun-<env>-...",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{0,15}$"
+    },
+    "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-[0-9]$" },
+    "account": {
+      "description": "Account id. Optional: defaults to the account of the credentials (CDK_DEFAULT_ACCOUNT).",
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "network": {
+      "description": "An existing VPC. Runner tasks run in its public subnets with a public IP (no NAT).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vpcId", "availabilityZones", "publicSubnetIds"],
+      "properties": {
+        "vpcId": { "type": "string", "pattern": "^vpc-[0-9a-z]+$" },
+        "availabilityZones": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "publicSubnetIds": {
+          "description": "One public subnet per availability zone, in the same order.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^subnet-[0-9a-z]+$" }
+        },
+        "securityGroupIds": {
+          "description": "Existing security groups for the runner tasks. Empty or absent: the stack creates one (no inbound rule) and prints its id.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^sg-[0-9a-z]+$" }
+        }
+      }
+    },
+    "iam": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "permissionsBoundary": {
+          "description": "Name of the permissions boundary policy applied to every role of the stack.",
+          "type": "string",
+          "default": "pb@tech-grun"
+        }
+      }
+    },
+    "sluis": {
+      "description": "Where the GitHub Apps' credentials come from: a role in the account that holds them, assumed by the secret-sync Lambda.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readerRoleArn"],
+      "properties": {
+        "readerRoleArn": { "type": "string", "pattern": "^arn:[^:]+:iam::[^:]+:role/.+$" },
+        "region": { "description": "Region of the SSM parameters. Default: the stack region.", "type": "string" },
+        "syncIntervalMinutes": { "type": "integer", "minimum": 1, "maximum": 30, "default": 5 }
+      }
+    },
+    "runnerImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "version"],
+      "properties": {
+        "repository": {
+          "description": "The base image repository, through the account's ECR pull-through cache: <account>.dkr.ecr.<region>.amazonaws.com/<cache prefix>/<path>.",
+          "type": "string",
+          "pattern": "^[a-z0-9-]+\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
+        },
+        "version": {
+          "description": "Tag of the ci-plane runner image. Changing it rebuilds the runner image on the next deploy.",
+          "type": "string",
+          "minLength": 1
+        },
+        "runnerVersion": {
+          "description": "GitHub Actions runner version baked in: 'latest' (resolved at each build) or an exact version.",
+          "type": "string",
+          "default": "latest"
+        },
+        "rebuildIntervalDays": {
+          "description": "Scheduled rebuild (picks up runner releases and OS updates). GitHub rejects runners older than 30 days, keep this well below. 0 disables.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 21,
+          "default": 7
+        },
+        "computeType": {
+          "description": "CodeBuild compute type of the image build (Arm).",
+          "type": "string",
+          "enum": ["BUILD_GENERAL1_SMALL", "BUILD_GENERAL1_LARGE"],
+          "default": "BUILD_GENERAL1_LARGE"
+        },
+        "cloudWatchAgent": { "type": "boolean", "default": true },
+        "extraCertificates": {
+          "description": "Private CA trusted by the image. Give a path (relative to this file) or the PEM itself.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "pem": { "type": "string" },
+            "name": { "type": "string", "default": "private-ca" }
+          },
+          "oneOf": [{ "required": ["path"] }, { "required": ["pem"] }]
+        }
+      }
+    },
+    "shapes": {
+      "description": "Runner sizes. One Fargate ARM provider per shape and organisation; the label is what a job puts in runs-on. Default: fg-large 4 vCPU/24 GB, fg-medium 2/14, fg-small 1/6.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "vcpu", "memoryGiB"],
+        "properties": {
+          "label": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,20}$" },
+          "vcpu": { "type": "number", "enum": [0.25, 0.5, 1, 2, 4, 8, 16] },
+          "memoryGiB": { "type": "number", "minimum": 0.5, "maximum": 120 },
+          "ephemeralStorageGiB": { "type": "integer", "minimum": 21, "maximum": 200, "default": 50 }
+        }
+      }
+    },
+    "requireSelfHostedLabel": {
+      "description": "Require the self-hosted label in runs-on. False lets a job say runs-on: fg-large alone.",
+      "type": "boolean",
+      "default": false
+    },
+    "logRetentionDays": { "type": "integer", "enum": [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365], "default": 30 },
+    "runnerEnvironment": {
+      "description": "Environment of the runner tasks: the cache endpoints the shared CI workflows read, and any extra variables.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goproxy": { "description": "CI_RUNNER_GOPROXY", "type": "string" },
+        "npmRegistry": { "description": "CI_RUNNER_NPM_REGISTRY", "type": "string" },
+        "bazelRemoteCache": { "description": "CI_RUNNER_BAZEL_REMOTE_CACHE", "type": "string" },
+        "remoteBuilders": { "description": "CI_RUNNER_REMOTE_BUILDERS", "type": "string" },
+        "extra": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]*$" }
+        }
+      }
+    },
+    "buildkit": {
+      "description": "mTLS towards the shared build farm. The client certificate comes from Secrets Manager and is written to files in one directory before the runner starts.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tlsDir": {
+          "description": "CI_BUILDKIT_TLS_DIR: a plain absolute path. Holds ca.pem, cert.pem and key.pem.",
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._/-]+$",
+          "default": "/etc/ci-buildkit-tls"
+        },
+        "tlsServerName": { "description": "CI_BUILDKIT_TLS_SERVERNAME", "type": "string" },
+        "clientCertSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arn"],
+          "properties": {
+            "arn": { "description": "Complete ARN of a JSON secret.", "type": "string", "pattern": "^arn:[^:]+:secretsmanager:.+" },
+            "caKey": { "type": "string", "default": "ca" },
+            "certKey": { "type": "string", "default": "cert" },
+            "keyKey": { "type": "string", "default": "key" }
+          }
+        }
+      }
+    },
+    "costCap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrentTasks": { "type": "integer", "minimum": 1, "default": 20 },
+        "onExceed": {
+          "description": "skip: no runner is started and the job waits. defer: the webhook fails and GitHub redelivery retries it for 30 minutes.",
+          "type": "string",
+          "enum": ["skip", "defer"],
+          "default": "skip"
+        },
+        "dailyBudgetUsd": { "type": "number", "exclusiveMinimum": 0, "default": 15 }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emails"],
+      "properties": {
+        "emails": { "type": "array", "items": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" } }
+      }
+    },
+    "warm": {
+      "description": "Warm capacity: runners started ahead of demand on a weekly rhythm. EventBridge rules run in UTC, so the window is given in UTC and chosen to cover local business hours in both summer and winter time.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pools"],
+      "properties": {
+        "startHourUtc": { "type": "integer", "minimum": 0, "maximum": 23, "default": 6 },
+        "startMinuteUtc": { "type": "integer", "minimum": 0, "maximum": 59, "default": 0 },
+        "weekDays": { "description": "EventBridge day-of-week field.", "type": "string", "default": "MON-FRI" },
+        "durationHours": { "type": "number", "exclusiveMinimum": 0, "maximum": 23, "default": 12 },
+        "pools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["shape", "count"],
+            "properties": {
+              "shape": { "type": "string" },
+              "count": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "webhook": {
+      "description": "How GitHub reaches the organisations' webhook functions: an API Gateway custom domain per organisation behind Cloudflare, with mTLS (Authenticated Origin Pulls) on the origin.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mtls"],
+      "properties": {
+        "mtls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["truststoreBucket", "truststoreKey"],
+          "properties": {
+            "truststoreBucket": { "description": "S3 bucket holding the Cloudflare origin-pull CA bundle (PEM).", "type": "string" },
+            "truststoreKey": { "type": "string" },
+            "truststoreVersion": { "type": "string" }
+          }
+        }
+      }
+    },
+    "reports": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucketName": { "description": "Optional fixed name; default generated.", "type": "string" },
+        "taskRolesCanWrite": { "description": "Let the runner task roles read and write the bucket.", "type": "boolean", "default": true }
+      }
+    },
+    "dashboard": { "description": "Create the CloudWatch dashboard and Logs Insights queries per organisation.", "type": "boolean", "default": true },
+    "orgs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "sluisParameter", "webhook"],
+        "properties": {
+          "name": { "description": "GitHub organisation (runners register at organisation level).", "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,38}$" },
+          "sluisParameter": { "description": "SSM parameter (in the sluis account) holding the org's App as a github/v1 JSON.", "type": "string", "pattern": "^/.+" },
+          "webhook": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["domainName", "certificateArn"],
+            "properties": {
+              "domainName": { "type": "string" },
+              "certificateArn": { "description": "ACM certificate for domainName, in the stack region.", "type": "string", "pattern": "^arn:[^:]+:acm:.+" }
+            }
+          },
+          "taskRole": {
+            "description": "Permissions of the runner tasks of this organisation (the ambient-credentials shim).",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "managedPolicyArns": { "type": "array", "items": { "type": "string", "pattern": "^arn:[^:]+:iam:.+" } },
+              "statements": { "description": "IAM policy statements in JSON form.", "type": "array", "items": { "type": "object" } }
+            }
+          },
+          "environment": { "description": "Extra environment for this organisation's tasks.", "type": "object", "additionalProperties": { "type": "string" } },
+          "warm": { "description": "Apply the top-level warm pools to this organisation.", "type": "boolean", "default": true }
+        }
+      }
+    }
+  }
+}

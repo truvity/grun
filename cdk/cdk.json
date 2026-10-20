@@ -1,0 +1,11 @@
+{
+  "app": "npx tsx bin/grun.ts",
+  "watch": { "include": ["**"], "exclude": ["node_modules", "cdk.out", "test"] },
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/aws-ecs:enableImdsBlockingDeprecatedFeature": false
+  }
+}

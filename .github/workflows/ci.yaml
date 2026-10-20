@@ -27,7 +27,7 @@ jobs:
       # leak-canary is the standing proof that this repository carries no
       # account ids, ARNs, hostnames or ticket keys, which is the reason it
       # can be public. It fails the build, not a report.
-      recipes: '["build", "test", "lint", "vuln", "leak-canary"]'
+      recipes: '["build", "test", "lint", "vuln", "leak-canary", "cdk-build", "cdk-test", "cdk-synth"]'
 
   # Stable name for branch protection: the matrix reports as
   # "recipes / build" and so on, so a required context called "check"
