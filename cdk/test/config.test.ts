@@ -91,4 +91,31 @@ describe('config', () => {
     c.network.publicSubnetIds.pop();
     expect(() => validate(c)).toThrow(/same length/);
   });
+
+  it('rejects a Fargate memory size that does not go with the vCPU, which ECS refuses at deploy time', () => {
+    const shape = (vcpu: number, memoryGiB: number) => {
+      const c: any = exampleConfig();
+      c.shapes = [{ label: 'fg-x', vcpu, memoryGiB }];
+      delete c.warm;
+      return c;
+    };
+    for (const [v, m] of [[0.25, 0.5], [0.5, 4], [1, 2], [1, 8], [2, 16], [4, 30], [8, 60], [16, 120]]) {
+      expect(() => validate(shape(v, m)), `${v}/${m}`).not.toThrow();
+    }
+    for (const [v, m] of [[0.25, 4], [0.5, 8], [1, 10], [2, 3], [4, 7], [8, 18], [16, 36]]) {
+      expect(() => validate(shape(v, m)), `${v}/${m}`).toThrow(/Fargate memory size/);
+    }
+  });
+
+  it('wants the webhook certificate in the stack region and the domain name in lowercase', () => {
+    const c: any = exampleConfig();
+    c.orgs[0].webhook.certificateArn = 'arn:partition:acm:us-east-1:account-id:certificate/x';
+    expect(() => validate(c)).toThrow(/certificate is in us-east-1/);
+    const d: any = exampleConfig();
+    d.orgs[0].webhook.domainName = 'Runners.Example.test';
+    expect(() => validate(d)).toThrow(/lowercase DNS name/);
+    const e: any = exampleConfig();
+    e.orgs[0].webhook.domainName = 'not a name';
+    expect(() => validate(e)).toThrow(/lowercase DNS name/);
+  });
 });

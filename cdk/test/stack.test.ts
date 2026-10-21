@@ -406,7 +406,44 @@ describe('selector, cap and budget', () => {
     expect(b.Budget.TimeUnit).toBe('DAILY');
     expect(b.Budget.BudgetLimit).toEqual({ Amount: 15, Unit: 'USD' });
     expect(b.Budget.CostFilters.TagKeyValue).toEqual(['user:component$ci']);
-    expect(b.NotificationsWithSubscribers.length).toBeGreaterThanOrEqual(2);
+    // 80 % and 100 % of the actual spend, nothing else: see the next test.
+    const notes = b.NotificationsWithSubscribers.map((n: any) => [n.Notification.NotificationType, n.Notification.Threshold]);
+    expect(notes).toEqual([
+      ['ACTUAL', 80],
+      ['ACTUAL', 100],
+    ]);
+  });
+
+  it('gives a daily budget no forecast, which AWS refuses at create time', () => {
+    const budgets = resources(s.json, 'AWS::Budgets::Budget');
+    expect(budgets.some(([, b]) => b.Properties.Budget.TimeUnit === 'DAILY')).toBe(true);
+    for (const [id, b] of budgets) {
+      if (b.Properties.Budget.TimeUnit !== 'DAILY') continue;
+      const types = b.Properties.NotificationsWithSubscribers.map((n: any) => n.Notification.NotificationType);
+      expect(types, id).not.toContain('FORECASTED');
+    }
+  });
+
+  it('obeys the Budgets limits on notifications and subscribers', () => {
+    for (const [id, b] of resources(s.json, 'AWS::Budgets::Budget')) {
+      const notes = b.Properties.NotificationsWithSubscribers;
+      expect(notes.length, id).toBeLessThanOrEqual(5);
+      for (const n of notes) {
+        expect(n.Subscribers.length, id).toBeGreaterThanOrEqual(1);
+        expect(n.Subscribers.length, id).toBeLessThanOrEqual(10);
+        expect(n.Notification.Threshold, id).toBeGreaterThan(0);
+      }
+      expect(b.Properties.Budget.BudgetName, id).toMatch(/^[^:\\]{1,100}$/);
+    }
+  });
+
+  it('creates the budget after the topic policy that lets Budgets publish, and before the custom domains', () => {
+    const budget = s.json.Resources.DailyBudget;
+    const depends = [budget.DependsOn].flat().filter(Boolean);
+    expect(depends.some((d: string) => /^AlertsPolicy/.test(d))).toBe(true);
+    const domains = resources(s.json, 'AWS::ApiGateway::DomainName');
+    expect(domains.length).toBeGreaterThan(0);
+    for (const [id, d] of domains) expect([d.DependsOn].flat(), id).toContain('DailyBudget');
   });
 
   it('takes the cap and the budget from the config', () => {
@@ -639,6 +676,143 @@ describe('reports and alerts', () => {
   it('alarms on management function errors per organisation', () => {
     const alarms = resources(s.json, 'AWS::CloudWatch::Alarm').filter(([id]) => /ManagementLambdaErrors/.test(id));
     expect(alarms).toHaveLength(2);
+  });
+});
+
+describe('rules AWS enforces at create time', () => {
+  const intrinsicRef = (v: any): string | undefined => (typeof v === 'object' && v !== null ? (v.Ref ?? v['Fn::GetAtt']?.[0]) : undefined);
+
+  it('gives every mutual TLS domain a regional endpoint, TLS 1.2 and a truststore, and maps it to a stage', () => {
+    const domains = resources(s.json, 'AWS::ApiGateway::DomainName');
+    expect(domains).toHaveLength(2);
+    const mappings = resources(s.json, 'AWS::ApiGateway::BasePathMapping');
+    for (const [id, d] of domains) {
+      const p = d.Properties;
+      expect(p.MutualTlsAuthentication.TruststoreUri, id).toMatch(/^s3:\/\/[^/]+\/.+/);
+      expect(p.EndpointConfiguration.Types, id).toEqual(['REGIONAL']);
+      expect(p.SecurityPolicy, id).toBe('TLS_1_2');
+      // A regional domain takes a regional certificate, not the edge one.
+      expect(p.RegionalCertificateArn, id).toBeDefined();
+      expect(p.CertificateArn, id).toBeUndefined();
+      // The mapping refers to the domain, so it is created after it.
+      expect(mappings.some(([, m]) => intrinsicRef(m.Properties.DomainName) === id), id).toBe(true);
+    }
+    for (const [id, m] of mappings) {
+      expect(domains.some(([did]) => did === intrinsicRef(m.Properties.DomainName)), id).toBe(true);
+      expect(m.Properties.Stage, id).toBeDefined();
+    }
+    for (const [id, a] of resources(s.json, 'AWS::ApiGateway::RestApi')) {
+      expect(a.Properties.DisableExecuteApiEndpoint, id).toBe(true);
+    }
+  });
+
+  it('subscribes alert addresses by email with a plain address, and nothing email cannot take', () => {
+    for (const [id, x] of resources(s.json, 'AWS::SNS::Subscription')) {
+      if (x.Properties.Protocol !== 'email') continue;
+      expect(x.Properties.Endpoint, id).toMatch(/^[^@\s]+@[^@\s]+$/);
+      expect(x.Properties.RawMessageDelivery, id).toBeUndefined();
+      expect(x.Properties.FilterPolicy, id).toBeUndefined();
+    }
+    for (const [id, t] of resources(s.json, 'AWS::SNS::Topic')) {
+      expect((t.Properties.DisplayName ?? '').length, id).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('builds the runner image on an Arm CodeBuild project with a compute type Arm has', () => {
+    const arm = ['BUILD_GENERAL1_SMALL', 'BUILD_GENERAL1_LARGE', 'BUILD_GENERAL1_XLARGE', 'BUILD_GENERAL1_2XLARGE'];
+    const check = (t: Synth) => {
+      for (const [id, p] of resources(t.json, 'AWS::CodeBuild::Project')) {
+        const e = p.Properties.Environment;
+        expect(e.Type, id).toBe('ARM_CONTAINER');
+        expect(e.Image, id).toContain('aarch64');
+        expect(arm, id).toContain(e.ComputeType);
+        expect(e.PrivilegedMode, id).toBe(true);
+      }
+    };
+    check(s);
+    for (const computeType of ['BUILD_GENERAL1_SMALL', 'BUILD_GENERAL1_LARGE'] as const) {
+      const t = synth((c) => {
+        c.runnerImage.computeType = computeType;
+      });
+      check(t);
+      expect(resources(t.json, 'AWS::CodeBuild::Project')[0][1].Properties.Environment.ComputeType).toBe(computeType);
+    }
+  });
+
+  // CloudWatch Logs takes these retention periods and no others.
+  const VALID_RETENTION = [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653];
+
+  it('gives every log group a retention CloudWatch Logs accepts', () => {
+    const groups = resources(s.json, 'AWS::Logs::LogGroup');
+    expect(groups.length).toBeGreaterThan(0);
+    for (const [id, g] of groups) expect(VALID_RETENTION, id).toContain(g.Properties.RetentionInDays);
+    // Log groups made by the log retention custom resource take the same values.
+    for (const [id, r] of resources(s.json, 'Custom::LogRetention')) expect(VALID_RETENTION, id).toContain(r.Properties.RetentionInDays);
+  });
+
+  it('accepts every retention the schema allows, and each synthesises to a valid one', () => {
+    const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'schema.json'), 'utf8'));
+    const allowed: number[] = schema.properties.logRetentionDays.enum;
+    for (const days of allowed) {
+      expect(VALID_RETENTION, `${days}`).toContain(days);
+      const t = synth((c) => {
+        c.logRetentionDays = days;
+      });
+      // The groups the stack makes itself follow the setting; the library's own keep their fixed one.
+      for (const [id, g] of resources(t.json, 'AWS::Logs::LogGroup')) {
+        expect(VALID_RETENTION, id).toContain(g.Properties.RetentionInDays);
+        if (/^(ProviderSelectorLogs|SecretSyncLogs|acmefg)/.test(id)) expect(g.Properties.RetentionInDays, id).toBe(days);
+      }
+    }
+  });
+
+  it('gives every DynamoDB table one billing model, and a provisioned one its throughput', () => {
+    const tables = resources(s.json, 'AWS::DynamoDB::Table');
+    expect(tables.length).toBeGreaterThan(0);
+    for (const [id, t] of tables) {
+      const p = t.Properties;
+      if (p.BillingMode === 'PAY_PER_REQUEST') {
+        expect(p.ProvisionedThroughput, id).toBeUndefined();
+        for (const g of p.GlobalSecondaryIndexes ?? []) expect(g.ProvisionedThroughput, id).toBeUndefined();
+      } else {
+        expect(p.ProvisionedThroughput, id).toBeDefined();
+      }
+    }
+  });
+
+  it('keeps every queue behind a Lambda at least as long invisible as the Lambda runs', () => {
+    const find = (type: string, id: string) => s.json.Resources[id]?.Type === type ? s.json.Resources[id].Properties : undefined;
+    const mappings = resources(s.json, 'AWS::Lambda::EventSourceMapping');
+    expect(mappings.length).toBeGreaterThan(0);
+    for (const [id, m] of mappings) {
+      const arn = m.Properties.EventSourceArn;
+      const queue = typeof arn === 'object' ? find('AWS::SQS::Queue', arn['Fn::GetAtt']?.[0]) : undefined;
+      if (!queue) continue;
+      const fn = find('AWS::Lambda::Function', intrinsicRef(m.Properties.FunctionName) ?? '');
+      if (!fn) continue;
+      expect(queue.VisibilityTimeout ?? 30, id).toBeGreaterThanOrEqual(fn.Timeout ?? 3);
+    }
+  });
+
+  it('keeps every alarm\'s datapoints within its evaluation periods', () => {
+    for (const [id, a] of resources(s.json, 'AWS::CloudWatch::Alarm')) {
+      if (a.Properties.DatapointsToAlarm !== undefined) {
+        expect(a.Properties.DatapointsToAlarm, id).toBeLessThanOrEqual(a.Properties.EvaluationPeriods);
+      }
+    }
+  });
+
+  it('keeps every Lambda environment inside the 4 KB limit, an intrinsic counted as a long ARN', () => {
+    const size = (v: any): number => {
+      if (typeof v === 'string') return v.length;
+      if (v?.['Fn::Join']) return (v['Fn::Join'][1] as unknown[]).reduce<number>((n, p) => n + size(p), 0);
+      return 128;
+    };
+    for (const [id, f] of resources(s.json, 'AWS::Lambda::Function')) {
+      const vars = f.Properties.Environment?.Variables ?? {};
+      const total = Object.entries(vars).reduce((n, [k, v]) => n + k.length + size(v), 0);
+      expect(total, id).toBeLessThanOrEqual(4096);
+    }
   });
 });
 
