@@ -123,6 +123,25 @@ export class RunnerImage extends Construct {
     );
     this.builder.grantPrincipal.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ['ecr:GetAuthorizationToken'], resources: ['*'] }));
   }
+
+  /**
+   * The builder's CodeBuild project, which a failed-build alert has to watch.
+   *
+   * The library creates it as the builder's child 'CodeBuild' when the first
+   * provider binds the image, so call this after the providers exist. Its own
+   * alert (RunnerStack.failedImageBuildsTopic) is a CodeStar Notifications
+   * rule, which races the creation of that service's service-linked role on a
+   * fresh account; the stack watches the project with EventBridge instead. A
+   * library that moves the child fails the synth here rather than silently
+   * losing the alert.
+   */
+  buildProject(): codebuild.IProject {
+    const project = (this.builder as unknown as Construct).node.tryFindChild('CodeBuild');
+    if (!(project instanceof codebuild.Project)) {
+      throw new Error('the image builder has no CodeBuild project to watch (unused, or cdk-github-runners changed its layout)');
+    }
+    return project;
+  }
 }
 
 export function retention(days: number): logs.RetentionDays {

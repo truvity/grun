@@ -71,7 +71,8 @@ After the deploy:
   (`Webhook<Org>RegionalDomainName`), proxied through Cloudflare with
   Authenticated Origin Pulls on.
 - Confirm the alert subscription emails (SNS sends a confirmation to each
-  address, twice: the alert topic and the failed-image-build topic).
+  address, once: the alert topic carries every alert, a failed runner image
+  build included).
 - The App credentials arrive within one sync interval (5 minutes). Until then
   the webhook rejects deliveries; GitHub keeps them for redelivery.
 
@@ -121,7 +122,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `costCap.maxConcurrentTasks` | 20 | task cap |
 | `costCap.onExceed` | `skip` | `skip` or `defer` (see below) |
 | `costCap.dailyBudgetUsd` | 15 | daily AWS Budget |
-| `alerts.emails` | required | alert recipients |
+| `alerts.emails` | required | alert recipients: alarms, budget, and failed runner image builds (an EventBridge rule on the image builder's CodeBuild project: `FAILED`, `FAULT` or `TIMED_OUT`; a stopped build is not an alert) |
 | `warm.startHourUtc`, `startMinuteUtc`, `weekDays`, `durationHours` | 6, 0, `MON-FRI`, 12 | warm window (UTC) |
 | `warm.pools[]` | | `shape` and `count` each |
 | `webhook.mtls.truststoreBucket`, `truststoreKey`, `truststoreVersion` | bucket and key required | Cloudflare origin-pull CA bundle in S3 |

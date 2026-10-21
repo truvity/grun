@@ -681,8 +681,55 @@ describe('reports and alerts', () => {
 
   it('subscribes the alert addresses', () => {
     const subs = resources(s.json, 'AWS::SNS::Subscription').filter(([, x]) => x.Properties.Protocol === 'email');
-    expect(subs.length).toBeGreaterThanOrEqual(2);
+    expect(subs).toHaveLength(s.config.alerts.emails.length);
     for (const [, x] of subs) expect(x.Properties.Endpoint).toBe('ci-alerts@example.test');
+  });
+
+  describe('failed image builds', () => {
+    const rule = () => {
+      const found = resources(s.json, 'AWS::Events::Rule').filter(([, r]) => r.Properties.EventPattern?.source?.includes('aws.codebuild'));
+      expect(found).toHaveLength(1);
+      return found[0][1].Properties;
+    };
+
+    it('has no CodeStar Notifications rule (it races the service-linked role on a fresh account)', () => {
+      expect(resources(s.json, 'AWS::CodeStarNotifications::NotificationRule')).toHaveLength(0);
+    });
+
+    it('watches the image builder project for failed builds', () => {
+      const [projectId] = resources(s.json, 'AWS::CodeBuild::Project')[0];
+      const p = rule();
+      expect(p.State).toBe('ENABLED');
+      expect(p.EventPattern['detail-type']).toEqual(['CodeBuild Build State Change']);
+      expect(p.EventPattern.detail['build-status']).toEqual(expect.arrayContaining(['FAILED']));
+      // A stopped build is somebody's decision, not a failure.
+      expect(p.EventPattern.detail['build-status']).not.toContain('STOPPED');
+      expect(p.EventPattern.detail['project-name']).toEqual([{ Ref: projectId }]);
+    });
+
+    it('publishes to the alert topic with a readable message', () => {
+      const [alertsId] = resources(s.json, 'AWS::SNS::Topic').find(([id]) => /^Alerts/.test(id))!;
+      const targets = rule().Targets;
+      expect(targets).toHaveLength(1);
+      expect(targets[0].Arn).toEqual({ Ref: alertsId });
+      const t = targets[0].InputTransformer;
+      expect(Object.values(t.InputPathsMap)).toEqual(
+        expect.arrayContaining(['$.detail.build-status', '$.detail.project-name', '$.detail.build-id']),
+      );
+      expect(text(t.InputTemplate)).toContain('runner image build');
+    });
+
+    it('lets EventBridge publish to the alert topic', () => {
+      const policy = text(resources(s.json, 'AWS::SNS::TopicPolicy'));
+      expect(policy).toContain('events.amazonaws.com');
+    });
+
+    it('creates no second topic or email subscription for it', () => {
+      expect(resources(s.json, 'AWS::SNS::Topic')).toHaveLength(1);
+      expect(resources(s.json, 'AWS::SNS::Subscription').filter(([, x]) => x.Properties.Protocol === 'email')).toHaveLength(
+        s.config.alerts.emails.length,
+      );
+    });
   });
 
   it('lets Budgets publish to the alert topic', () => {

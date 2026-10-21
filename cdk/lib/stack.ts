@@ -11,6 +11,7 @@ import {
   aws_budgets as budgets,
   aws_cloudwatch as cloudwatch,
   aws_cloudwatch_actions as cwActions,
+  aws_codebuild as codebuild,
   aws_ec2 as ec2,
   aws_ecs as ecs,
   aws_events as events,
@@ -175,9 +176,7 @@ export class GrunStack extends Stack {
     }
 
     // ---- failed image builds go to the same people
-    const first = this.orgs[config.orgs[0].name];
-    const failedBuilds = first.runners.failedImageBuildsTopic(image);
-    for (const email of config.alerts.emails) failedBuilds.addSubscription(new subs.EmailSubscription(email));
+    this.addImageBuildAlert(name, image.buildProject());
 
     // ---- secret sync: sluis export -> the runners' own secrets
     this.addSecretSync(config);
@@ -188,6 +187,30 @@ export class GrunStack extends Stack {
     new CfnOutput(this, 'ReportsBucketName', { value: reportsBucket.bucketName });
     new CfnOutput(this, 'ClusterName', { value: this.cluster.clusterName });
     new CfnOutput(this, 'AlertsTopicArn', { value: this.alertTopic.topicArn });
+  }
+
+  /**
+   * Alerts when the runner image build fails, on the alerts topic.
+   *
+   * An EventBridge rule on the builder's CodeBuild project, not the library's
+   * failedImageBuildsTopic: that one is a CodeStar Notifications rule, whose
+   * creation races the service-linked role of the service on a fresh account
+   * ("Invalid request provided: AWS::CodeStarNotifications::NotificationRule").
+   * STOPPED is left out: somebody asked for it.
+   */
+  private addImageBuildAlert(name: string, project: codebuild.IProject): void {
+    // The SnsTopic target adds the topic policy statement for events.amazonaws.com; the topic has no key.
+    project.onStateChange('ImageBuildFailed', {
+      description: `${name}: the runner image build failed`,
+      eventPattern: { detail: { 'build-status': ['FAILED', 'FAULT', 'TIMED_OUT'] } },
+      target: new targets.SnsTopic(this.alertTopic, {
+        message: events.RuleTargetInput.fromText(
+          `${name}: runner image build ${events.EventField.fromPath('$.detail.build-status')} ` +
+            `(project ${events.EventField.fromPath('$.detail.project-name')}, build ${events.EventField.fromPath('$.detail.build-id')}). ` +
+            `Logs: ${events.EventField.fromPath('$.detail.additional-information.logs.deep-link')}`,
+        ),
+      }),
+    });
   }
 
   private addSecretSync(config: GrunConfig): void {
