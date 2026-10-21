@@ -19,7 +19,23 @@ var (
 		"ecs-tasks.amazonaws.com", "events.amazonaws.com", "lambda.amazonaws.com",
 		"scheduler.amazonaws.com", "states.amazonaws.com",
 	}
-	deployServiceLinkedRoles = []string{"codestar-notifications.amazonaws.com", "ecs.amazonaws.com"}
+
+	// deployServiceLinkedRoles are the services whose service-linked role
+	// CloudFormation may create. AWS creates such a role implicitly, in the
+	// caller's name, the first time a resource that needs it is created in an
+	// account, so a fresh account fails at that resource unless the service is
+	// listed here. One entry per role the stack's resource types need, and no
+	// more: [slrCreatingTypes] says which type needs which, and a test holds
+	// the two in step. Sorted.
+	deployServiceLinkedRoles = []string{
+		// AWSServiceRoleForCodeStarNotifications: AWS::CodeStarNotifications::NotificationRule.
+		"codestar-notifications.amazonaws.com",
+		// AWSServiceRoleForECS: AWS::ECS::Cluster.
+		"ecs.amazonaws.com",
+		// AWSServiceRoleForAPIGateway: AWS::ApiGateway::DomainName with mutual
+		// TLS, which API Gateway sets up through this role.
+		"ops.apigateway.amazonaws.com",
+	}
 
 	// fullServices are the IAM namespaces allowed with every action on every
 	// resource: the services whose resources the stack creates, updates and
@@ -48,9 +64,10 @@ var (
 //     stack never exists without it; managing those roles (policies, tags,
 //     trust, description, deletion). iam:PassRole only on the stack's roles and
 //     the bootstrap roles (role/cdk-Qualifier-*) and only to the services in
-//     [Deploy]'s fixed list. iam:CreateServiceLinkedRole for ECS and CodeStar
-//     Notifications only. There is no other IAM write: no user, no policy, no
-//     boundary change, no role outside the stack.
+//     [Deploy]'s fixed list. iam:CreateServiceLinkedRole only on service-linked
+//     role ARNs and only for the services in the list [deployServiceLinkedRoles]
+//     (ECS, CodeStar Notifications, API Gateway). There is no other IAM write:
+//     no user, no policy, no boundary change, no role outside the stack.
 //   - sts:AssumeRole on the bootstrap roles, which is how the deploy role
 //     reaches the publishing and lookup roles.
 //   - every action of the services the stack's resources live in (the
@@ -112,7 +129,8 @@ func Deploy(p Params) (policy.Document, error) {
 			Condition: []policy.Condition{{Operator: "StringEquals", Key: "iam:PassedToService", Values: deployPassedToServices}},
 		},
 		{
-			Sid: "AllowServiceLinkedRoles", Effect: allow, Action: []string{"iam:CreateServiceLinkedRole"}, Resource: star(),
+			Sid: "AllowServiceLinkedRoles", Effect: allow, Action: []string{"iam:CreateServiceLinkedRole"},
+			Resource:  []string{p.roleARN("aws-service-role/*")},
 			Condition: []policy.Condition{{Operator: "StringEquals", Key: "iam:AWSServiceName", Values: deployServiceLinkedRoles}},
 		},
 		// The deploy role reaches the publishing and lookup roles; the CLI reaches

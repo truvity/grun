@@ -85,7 +85,7 @@ environment: every name is an input.
 | Boundary | Put on | Allows |
 |---|---|---|
 | **Runtime** (`boundary.Runtime`) | the stack's own roles, `<rolePrefix>*` (state machines, Lambda functions, ECS tasks) | everything except IAM writes; the two exceptions are `iam:PassRole` of the stack's roles to ECS tasks and creating the ECS service-linked role |
-| **Deploy** (`boundary.Deploy`) | the CDK bootstrap roles, `cdk-<qualifier>-*` (CloudFormation execution, deploy, file and image publishing, lookup) | an allow list: the stack's services, and in IAM only the stack's roles, created only with the Runtime boundary |
+| **Deploy** (`boundary.Deploy`) | the CDK bootstrap roles, `cdk-<qualifier>-*` (CloudFormation execution, deploy, file and image publishing, lookup) | an allow list: the stack's services, and in IAM only the stack's roles, created only with the Runtime boundary, and the service-linked roles its resource types make AWS create (ECS, CodeStar Notifications, API Gateway); a drift test fails when a resource type needs one the boundary does not allow |
 
 The documents are the component's part only. The estate's own guards (no edit
 of a boundary policy, no removal of a boundary from a role or user) are

@@ -68,12 +68,13 @@
       "Sid": "AllowServiceLinkedRoles",
       "Effect": "Allow",
       "Action": "iam:CreateServiceLinkedRole",
-      "Resource": "*",
+      "Resource": "arn:part:iam::*:role/aws-service-role/*",
       "Condition": {
         "StringEquals": {
           "iam:AWSServiceName": [
             "codestar-notifications.amazonaws.com",
-            "ecs.amazonaws.com"
+            "ecs.amazonaws.com",
+            "ops.apigateway.amazonaws.com"
           ]
         }
       }
