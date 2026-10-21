@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/truvity/aws-structure/policy"
 	"github.com/truvity/grun/boundary"
 )
 
@@ -28,10 +29,10 @@ func params() boundary.Params {
 	}
 }
 
-func minified(t *testing.T, d boundary.Document) []byte {
+func minified(t *testing.T, d policy.Document) []byte {
 	t.Helper()
 
-	b, err := d.JSON()
+	b, err := d.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func minified(t *testing.T, d boundary.Document) []byte {
 
 // golden compares the document with testdata/<name>, an indented copy that is
 // easy to review; -update rewrites it.
-func golden(t *testing.T, name string, d boundary.Document) {
+func golden(t *testing.T, name string, d policy.Document) {
 	t.Helper()
 
 	got, err := json.MarshalIndent(d, "", "  ")
@@ -98,7 +99,7 @@ func TestRuntimeIsTheEarlierDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var old boundary.Document
+	var old policy.Document
 	if err := json.Unmarshal(raw, &old); err != nil {
 		t.Fatal(err)
 	}
@@ -116,12 +117,12 @@ func TestRuntimeIsTheEarlierDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rest := boundary.Document{Version: old.Version, Statement: old.Statement[:len(old.Statement)-2]}
+	rest := policy.Document{Version: old.Version, Statement: old.Statement[:len(old.Statement)-2]}
 	if !bytes.Equal(minified(t, d), minified(t, rest)) {
 		t.Errorf("Runtime differs from the old document without its guards:\n got: %s\nwant: %s", minified(t, d), minified(t, rest))
 	}
 
-	whole := boundary.Document{Version: d.Version, Statement: append(slices.Clone(d.Statement), guards...)}
+	whole := policy.Document{Version: d.Version, Statement: append(slices.Clone(d.Statement), guards...)}
 
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, raw); err != nil {
@@ -134,7 +135,7 @@ func TestRuntimeIsTheEarlierDocument(t *testing.T) {
 }
 
 func TestNoEstateGuardsInDocuments(t *testing.T) {
-	for name, build := range map[string]func(boundary.Params) (boundary.Document, error){
+	for name, build := range map[string]func(boundary.Params) (policy.Document, error){
 		"Runtime": boundary.Runtime, "Deploy": boundary.Deploy,
 	} {
 		d, err := build(params())
@@ -148,9 +149,26 @@ func TestNoEstateGuardsInDocuments(t *testing.T) {
 				t.Errorf("%s carries the estate guard %s; the caller appends it", name, s.Sid)
 			}
 
-			if strings.Contains(string(minified(t, boundary.Document{Statement: []boundary.Statement{s}})), "DeleteRolePermissionsBoundary") {
+			if strings.Contains(string(minified(t, policy.Document{Statement: []policy.Statement{s}})), "DeleteRolePermissionsBoundary") {
 				t.Errorf("%s statement %s denies removing a boundary; that is the caller's guard", name, s.Sid)
 			}
+		}
+	}
+}
+
+// Both documents are valid policy documents: unique Sids, one of Action and
+// NotAction, no empty entry.
+func TestDocumentsAreValid(t *testing.T) {
+	for name, build := range map[string]func(boundary.Params) (policy.Document, error){
+		"Runtime": boundary.Runtime, "Deploy": boundary.Deploy,
+	} {
+		d, err := build(params())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := d.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
@@ -166,7 +184,7 @@ func TestSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for name, doc := range map[string]boundary.Document{"Runtime": r, "Deploy": d} {
+	for name, doc := range map[string]policy.Document{"Runtime": r, "Deploy": d} {
 		n, err := doc.Size()
 		if err != nil {
 			t.Fatal(err)

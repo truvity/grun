@@ -3,6 +3,8 @@ package boundary
 import (
 	"errors"
 	"slices"
+
+	"github.com/truvity/aws-structure/policy"
 )
 
 // The Runtime boundary's two exceptions to its IAM deny are fixed by what the
@@ -43,9 +45,9 @@ var iamWriteDenied = []string{
 //
 // The statements are the ones an earlier tool rendered for this boundary,
 // moved here unchanged; a golden test holds them byte for byte.
-func Runtime(p Params) (Document, error) {
+func Runtime(p Params) (policy.Document, error) {
 	if errs := p.validate(); len(errs) > 0 {
-		return Document{}, errors.Join(append([]error{errors.New("boundary: invalid Runtime parameters")}, errs...)...)
+		return policy.Document{}, errors.Join(append([]error{errors.New("boundary: invalid Runtime parameters")}, errs...)...)
 	}
 
 	// iamWriteDenied without the two actions that are denied below under a condition.
@@ -53,23 +55,26 @@ func Runtime(p Params) (Document, error) {
 		return a == "iam:Pass*" || a == "iam:Create*"
 	})
 
-	d := Document{Version: policyVersion, Statement: []Statement{
-		{Sid: "AllowAll", Effect: allow, Action: "*", Resource: "*"},
-		{Sid: "DenyIAMWriteExceptGrun", Effect: deny, Action: writes, Resource: "*"},
+	d := policy.Document{Version: policy.Version, Statement: []policy.Statement{
+		{Sid: "AllowAll", Effect: allow, Action: []string{"*"}, Resource: []string{"*"}},
+		{Sid: "DenyIAMWriteExceptGrun", Effect: deny, Action: writes, Resource: []string{"*"}},
 		// iam:Create* except iam:CreateServiceLinkedRole for ECS.
 		{
-			Sid: "DenyCreateExceptServiceLinkedRole", Effect: deny, Action: "iam:Create*", Resource: "*",
-			Condition: map[string]any{"StringNotEquals": map[string]any{"iam:AWSServiceName": runtimeServiceLinkedRole}},
+			Sid: "DenyCreateExceptServiceLinkedRole", Effect: deny, Action: []string{"iam:Create*"}, Resource: []string{"*"},
+			Condition: []policy.Condition{{Operator: "StringNotEquals", Key: "iam:AWSServiceName", Values: []string{runtimeServiceLinkedRole}}},
 		},
-		{Sid: "DenyPassRoleOutsideGrunRoles", Effect: deny, Action: "iam:PassRole", NotResource: p.roleARN(p.RolePrefix + "*")},
 		{
-			Sid: "DenyPassRoleToOtherServices", Effect: deny, Action: "iam:PassRole", Resource: "*",
-			Condition: map[string]any{"StringNotEquals": map[string]any{"iam:PassedToService": runtimePassedToService}},
+			Sid: "DenyPassRoleOutsideGrunRoles", Effect: deny, Action: []string{"iam:PassRole"},
+			NotResource: []string{p.roleARN(p.RolePrefix + "*")},
+		},
+		{
+			Sid: "DenyPassRoleToOtherServices", Effect: deny, Action: []string{"iam:PassRole"}, Resource: []string{"*"},
+			Condition: []policy.Condition{{Operator: "StringNotEquals", Key: "iam:PassedToService", Values: []string{runtimePassedToService}}},
 		},
 	}}
 
 	if err := checkSize("Runtime", d); err != nil {
-		return Document{}, err
+		return policy.Document{}, err
 	}
 
 	return d, nil

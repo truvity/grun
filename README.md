@@ -8,7 +8,7 @@ GitHub Actions self-hosted runners on AWS ECS Fargate, deployed with
 |---|---|---|
 | `cmd/ci-measure` | available | Go tool: start latency, duration, minutes, step breakdown and estimated cost of workflow jobs, read from the GitHub REST API |
 | [`cdk/`](cdk/README.md) | available | CDK app (TypeScript): the cdk-github-runners deployment for ECS Fargate, its runner image, the GitHub App secret sync, cost guards |
-| [`boundary/`](boundary) | available | Go module `github.com/truvity/grun/boundary` (standard library only): the IAM permissions boundaries the stack needs, as policy documents generated from parameters |
+| [`boundary/`](boundary) | available | Go module `github.com/truvity/grun/boundary` (its only dependency is the standard-library-only `aws-structure/policy` module): the IAM permissions boundaries the stack needs, as policy documents generated from parameters |
 
 This repository is public and generic. It holds mechanism only: account ids,
 bucket names, hostnames and organisation-specific configuration are inputs
@@ -77,8 +77,9 @@ configuration without deploying it.
 The stack runs under two IAM permissions boundaries, and this repository
 declares their shape so that the people who create them do not have to guess
 what the stack needs. The Go module `github.com/truvity/grun/boundary` (its own
-`go.mod`, standard library only, versioned by tags `boundary/vX.Y.Z`) renders
-each as a policy document from parameters. It knows no account, name or
+`go.mod`, versioned by tags `boundary/vX.Y.Z`; its only dependency is
+`github.com/truvity/aws-structure/policy`, a standard-library-only module) renders
+each as a typed `policy.Document` from parameters. It knows no account, name or
 environment: every name is an input.
 
 | Boundary | Put on | Allows |
@@ -101,9 +102,9 @@ p := boundary.Params{
     ReadBuckets:         []string{"<bucket>"},     // optional
     Partition:           "aws",
 }
-runtime, err := boundary.Runtime(p) // the document for RuntimeBoundaryName
-deploy, err := boundary.Deploy(p)   // the document for the bootstrap roles' boundary
-body, err := deploy.JSON()          // minified JSON, ready for a managed policy
+runtime, err := boundary.Runtime(p) // a policy.Document, for RuntimeBoundaryName
+deploy, err := boundary.Deploy(p)   // a policy.Document, for the bootstrap roles' boundary
+body, err := json.Marshal(deploy)   // canonical minified JSON, ready for a managed policy
 ```
 
 To wire them in a consumer:
