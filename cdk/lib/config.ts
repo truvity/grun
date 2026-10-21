@@ -26,6 +26,13 @@ export interface OrgConfig {
   taskRole?: { managedPolicyArns?: string[]; statements?: Record<string, unknown>[] };
   environment?: Record<string, string>;
   warm?: boolean;
+  /**
+   * The GitHub runner group the organisation's runners register in. The group
+   * must exist (it is created in GitHub, not by this app) and its repository
+   * access decides which repositories a runner of this stack may serve. Absent:
+   * the organisation's default group.
+   */
+  runnerGroup?: string;
 }
 
 export interface GrunConfig {

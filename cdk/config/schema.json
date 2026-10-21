@@ -315,7 +315,13 @@
             }
           },
           "environment": { "description": "Extra environment for this organisation's tasks.", "type": "object", "additionalProperties": { "type": "string" } },
-          "warm": { "description": "Apply the top-level warm pools to this organisation.", "type": "boolean", "default": true }
+          "warm": { "description": "Apply the top-level warm pools to this organisation.", "type": "boolean", "default": true },
+          "runnerGroup": {
+            "description": "GitHub runner group the runners of this organisation register in. It must exist before the first job (a runner that cannot join its group does not start); its repository access limits which repositories the runners serve. Absent: the organisation's default group.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
         }
       }
     }

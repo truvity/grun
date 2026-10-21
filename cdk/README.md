@@ -135,10 +135,33 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].taskRole.statements` | | IAM policy statements (JSON form) for them |
 | `orgs[].environment` | | extra variables for this organisation's tasks |
 | `orgs[].warm` | true | give this organisation the warm pools |
+| `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
 
 Default shapes: `fg-large` 4 vCPU / 24 GB / 100 GiB, `fg-medium` 2 / 14 / 50,
 `fg-small` 1 / 6 / 50. Fargate takes only certain CPU and memory pairs; an
 invalid pair fails at deploy.
+
+### Runner groups and labels
+
+Two stacks serving one GitHub organisation (two tiers, say) each have their own
+GitHub App, and GitHub sends every `workflow_job` of the organisation to every
+App installed on the repository. What keeps a job from starting a runner in both
+stacks is the label: a provider starts a runner only for a job that carries all
+of its labels (`<shape label>`, `linux`, `arm64`). So **give each stack shape
+labels of its own** (`shapes[].label`, for example a different prefix per tier);
+a label two stacks share is a job that both of them serve. The label is also
+what a workflow puts in `runs-on`, so it is the tier a job chooses.
+
+`orgs[].runnerGroup` registers the organisation's runners in a GitHub runner
+group instead of the default group, and the group's repository access then
+decides which repositories the runners may serve (a pilot on one repository, for
+example). The group is made in GitHub (organisation settings, or `POST
+/orgs/{org}/actions/runner-groups`), not by this app, and must exist before the
+first job: a runner that cannot join its group does not start. The App needs the
+organisation permission "Self-hosted runners: read and write" it already needs
+for registration. A job from a repository the group does not admit never gets
+the runner, which then waits and is torn down at its timeout; to avoid the
+waste, install the App on the same repositories (a selected installation).
 
 ## Design notes
 

@@ -495,6 +495,22 @@ describe('cost tags', () => {
     expect(byOrg('widgets')).toHaveLength(1);
   });
 
+  it('registers the runners of an organisation in its runner group, and only that one', () => {
+    const t = synth((c) => {
+      c.orgs[1].runnerGroup = 'example-pilot-group';
+    });
+    const machines = resources(t.json, 'AWS::StepFunctions::StateMachine').map(([, m]) => definition(m));
+    const company = (org: string) => machines.filter((d) => d.includes(`"Key":"company","Value":"${org}"`));
+    expect(company('widgets')).toHaveLength(1);
+    expect(company('widgets')[0]).toContain('example-pilot-group');
+    expect(company('acme')).toHaveLength(1);
+    expect(company('acme')[0]).not.toContain('example-pilot-group');
+    // the example configuration, which sets none, names no group
+    for (const [id, m] of resources(s.json, 'AWS::StepFunctions::StateMachine')) {
+      expect(definition(m), id).not.toContain('example-pilot-group');
+    }
+  });
+
   it('takes the key names and the component value from the config', () => {
     const t = synth((c) => {
       c.costTags = { componentKey: 'Component', componentValue: 'runners', environmentKey: 'Env', companyKey: 'Company' };

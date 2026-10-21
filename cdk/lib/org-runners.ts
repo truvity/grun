@@ -79,6 +79,7 @@ export class OrgRunners extends Construct {
     for (const shape of props.shapes) {
       const provider = new FargateRunnerProvider(this, shape.label, {
         labels: [shape.label, 'linux', 'arm64'],
+        group: org.runnerGroup,
         imageBuilder: props.imageBuilder,
         vpc: props.vpc,
         subnetSelection: { subnets: props.publicSubnets },
