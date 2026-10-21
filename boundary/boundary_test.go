@@ -280,3 +280,27 @@ func TestValidation(t *testing.T) {
 		}
 	})
 }
+
+// The qualifier is the only place the CDK bootstrap's names enter the Deploy
+// boundary: every name follows the qualifier, and none is left on the default.
+func TestDeployFollowsTheQualifier(t *testing.T) {
+	p := params()
+	p.Qualifier = "grun"
+
+	deploy, err := boundary.Deploy(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := string(minified(t, deploy))
+
+	for _, want := range []string{"role/cdk-grun-", "cdk-grun-assets-", "/cdk-bootstrap/grun/"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the Deploy boundary does not name %q", want)
+		}
+	}
+
+	if strings.Contains(got, "hnb659fds") {
+		t.Error("the Deploy boundary still names the default qualifier")
+	}
+}

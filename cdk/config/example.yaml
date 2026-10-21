@@ -19,6 +19,9 @@ network:                # an existing VPC; tasks run in its public subnets with 
 iam:
   permissionsBoundary: pb@tech-grun
 
+cdk:
+  qualifier: grun       # the CDK bootstrap qualifier; roles cdk-grun-*. Default: hnb659fds (CDK's own)
+
 sluis:                  # where the GitHub Apps come from
   readerRoleArn: arn:partition:iam::account-id:role/example-reader
   region: eu-central-1

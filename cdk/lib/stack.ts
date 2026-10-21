@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import {
   CfnOutput,
+  DefaultStackSynthesizer,
   Duration,
   RemovalPolicy,
   Stack,
@@ -22,7 +23,7 @@ import {
   aws_sns_subscriptions as subs,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, costTags, stackName } from './config';
+import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, costTags, qualifier, stackName } from './config';
 import { applyIdentityRules } from './iam';
 import { OrgRunners } from './org-runners';
 import { RunnerImage, retention } from './runner-image';
@@ -42,7 +43,10 @@ export class GrunStack extends Stack {
   public readonly orgs: Record<string, OrgRunners> = {};
 
   constructor(scope: Construct, id: string, props: GrunStackProps) {
-    super(scope, id, props);
+    // The stack deploys through the bootstrap of its own qualifier (cdk.qualifier):
+    // the roles and the buckets it uses are cdk-<qualifier>-*, which the Deploy
+    // boundary (boundary/) names. The bootstrap is the estate's to deploy.
+    super(scope, id, { ...props, synthesizer: props.synthesizer ?? new DefaultStackSynthesizer({ qualifier: qualifier(props.config) }) });
     const { config } = props;
     const name = stackName(config);
     if (id !== name) throw new Error(`the stack must be called ${name}`);

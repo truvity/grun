@@ -13,6 +13,22 @@ describe('config', () => {
     expect(() => validate(c)).toThrow(/additional properties/);
   });
 
+  it('accepts a CDK qualifier of 1 to 10 lowercase letters and digits, and no other', () => {
+    for (const ok of ['a', 'grun', 'hnb659fds', 'abcdefghij']) {
+      const c: any = exampleConfig();
+      c.cdk = { qualifier: ok };
+      expect(() => validate(c), ok).not.toThrow();
+    }
+    for (const bad of ['', 'Grun', 'abcdefghijk', 'a-b', 'a_b']) {
+      const c: any = exampleConfig();
+      c.cdk = { qualifier: bad };
+      expect(() => validate(c), bad).toThrow(/qualifier/);
+    }
+    const c: any = exampleConfig();
+    c.cdk = { qualifer: 'grun' };
+    expect(() => validate(c)).toThrow(/additional properties/);
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;

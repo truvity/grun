@@ -50,6 +50,19 @@
         }
       }
     },
+    "cdk": {
+      "description": "The CDK bootstrap the stack deploys through.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "qualifier": {
+          "description": "The CDK qualifier of the bootstrap: its roles and buckets are named cdk-<qualifier>-*. It must be the qualifier the account was bootstrapped with, and the Qualifier the Deploy boundary was rendered with.",
+          "type": "string",
+          "pattern": "^[a-z0-9]{1,10}$",
+          "default": "hnb659fds"
+        }
+      }
+    },
     "sluis": {
       "description": "Where the GitHub Apps' credentials come from: a role in the account that holds them, assumed by the secret-sync Lambda.",
       "type": "object",

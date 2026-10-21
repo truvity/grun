@@ -97,7 +97,7 @@ error beyond that.
 p := boundary.Params{
     RolePrefix:          "grun-",             // the stack's role names start with it
     RuntimeBoundaryName: "<runtime boundary policy name>",
-    Qualifier:           "<cdk qualifier>",   // the CDK default is hnb659fds
+    Qualifier:           "<cdk qualifier>",   // the stack's cdk.qualifier; the CDK default is hnb659fds
     ReadParameterPaths:  []string{"<ssm path>/*"}, // optional, no leading slash
     ReadBuckets:         []string{"<bucket>"},     // optional
     Partition:           "aws",
@@ -112,52 +112,53 @@ To wire them in a consumer:
 1. **Create the boundaries** as customer managed policies from the two
    documents (plus your own guards). `RuntimeBoundaryName` is the name you
    give the Runtime policy; the Deploy policy takes any name you like.
-2. **Bootstrap CDK** with the generated template, so the Deploy boundary is
-   on every bootstrap role: `just bootstrap <account> <region> <deploy boundary
-   name> <config>` (see "The bootstrap template" below). Plain
-   `cdk bootstrap --custom-permissions-boundary` is not enough: CDK's default
-   template applies the boundary to the CloudFormation execution role only.
+2. **Bootstrap CDK** for the stack's qualifier, with the Deploy boundary on
+   every bootstrap role (see "The bootstrap" below).
 3. **Set `iam.permissionsBoundary`** in the stack's configuration to the
-   Runtime boundary's name. Every role the stack creates then carries it, and
-   the Deploy boundary refuses to create a `<rolePrefix>*` role without it.
+   Runtime boundary's name, and **`cdk.qualifier`** to the qualifier of that
+   bootstrap. Every role the stack creates then carries the Runtime boundary,
+   and the Deploy boundary refuses to create a `<rolePrefix>*` role without it.
 
-### The bootstrap template
+### The bootstrap
 
-`cdk bootstrap --custom-permissions-boundary <name>` sets the template's
-`InputPermissionsBoundary` parameter, and CDK's default bootstrap template uses
-it for `CloudFormationExecutionRole` only. `FilePublishingRole`,
-`ImagePublishingRole`, `LookupRole` and `DeploymentActionRole` are created with
-no boundary. Where people may create only roles that carry an approved boundary,
-the bootstrap fails with an explicit deny on the first of them.
+The stack deploys through a CDK bootstrap, and bootstrapping is the estate's
+job, not this repository's: it owns the accounts and the boundary policies. The
+stack asks for three things of it.
 
-`cdk/bootstrap/template.ts` generates the template that fixes this, from the
-one the pinned `aws-cdk` CLI ships (`cdk/node_modules`, so the input is fixed by
-`package-lock.json`; no network). It loads it with CDK's own
-`cloudformation-include` (`CfnInclude`) under `BootstraplessSynthesizer`, which
-adds no `BootstrapVersion` parameter, no `CheckBootstrapVersion` rule and no
-asset metadata, then copies the execution role's `PermissionsBoundary` to every
-`AWS::IAM::Role` (and `AWS::IAM::User`) that has none. It fails if the
-execution role has no `PermissionsBoundary` to copy, so a CLI release that moves
-it is noticed rather than guessed past. Nothing else changes: the output equals
-the shipped template except for the added properties (a test compares them), and
-the boundary stays conditional on the parameter, so bootstrapping without
-`--custom-permissions-boundary` still creates unbounded roles. The output is
-JSON, which CloudFormation and `cdk bootstrap --template` accept.
+- **The qualifier.** The stack's `cdk.qualifier` (default `hnb659fds`, CDK's
+  own) is the qualifier of the bootstrap, so the roles and buckets it uses are
+  `cdk-<qualifier>-*`. Give the stack a qualifier of its own: one bootstrap per
+  app keeps its roles and its boundary apart from every other app's. Use the
+  same value as `boundary.Params.Qualifier` when the Deploy boundary is
+  rendered.
+- **The Deploy boundary on every bootstrap role.** `cdk bootstrap
+  --custom-permissions-boundary <name>` sets the template's
+  `InputPermissionsBoundary` parameter, and CDK's template applies it to
+  `CloudFormationExecutionRole` only: `FilePublishingRole`, `ImagePublishingRole`,
+  `LookupRole` and `DeploymentActionRole` are created with no boundary. Where
+  people may create only roles that carry an approved boundary, that bootstrap
+  fails with an explicit deny on the first of them. So the estate's bootstrap
+  must copy the execution role's `PermissionsBoundary` onto every
+  `AWS::IAM::Role` (and `AWS::IAM::User`) of the template, and pass the Deploy
+  boundary's name as `InputPermissionsBoundary`. The boundary policy must exist
+  in the account first.
+- **The version.** The stack checks `/cdk-bootstrap/<qualifier>/version` at
+  deploy time, as any CDK stack does; after an `aws-cdk` upgrade, bootstrap
+  again if the template's version rose.
 
-```sh
-# write the template (offline)
-just bootstrap-template <out.json>
+For example, [truvity/aws-structure](https://github.com/truvity/aws-structure)
+deploys it from configuration: its `CDKBootstraps` entry for the app names the
+qualifier, the Deploy boundary, the accounts and the regions, and it vendors
+CDK's template and applies that one change to it.
 
-# bootstrap: generates the template to a temporary file, then runs
-#   cdk bootstrap aws://<account>/<region> --custom-permissions-boundary <name> \
-#     --template <generated> -c config=<config>
-just bootstrap <account> <region> <deploy boundary name> <path>/<env>.yaml
+```go
+spec.CDKBootstraps = []cdkbootstrap.Bootstrap{{
+    Qualifier:      "<cdk qualifier>",           // = cdk.qualifier
+    DeployBoundary: "<deploy boundary name>",    // the policy rendered from boundary.Deploy
+    Accounts:       []string{"<account>"},
+    Regions:        []string{"<region>"},
+}}
 ```
-
-The boundary policy must exist in the account before bootstrapping. `cdk
-bootstrap` runs the app, which is why `bootstrap` takes the configuration.
-After an `aws-cdk` upgrade, bootstrap again if the shipped template's version
-rose: the generated template follows the CLI.
 
 The Deploy boundary lists services (CloudFormation, API Gateway, CloudWatch,
 CodeBuild, DynamoDB, ECS, EventBridge, Lambda, Logs, Secrets Manager, SNS, SQS,
