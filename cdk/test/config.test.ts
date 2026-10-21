@@ -29,6 +29,14 @@ describe('config', () => {
     expect(() => validate(c)).toThrow(/additional properties/);
   });
 
+  it('accepts a runner group per organisation, and not an empty one', () => {
+    const c: any = exampleConfig();
+    c.orgs[0].runnerGroup = 'pilot';
+    expect(() => validate(c)).not.toThrow();
+    c.orgs[0].runnerGroup = '';
+    expect(() => validate(c)).toThrow(/runnerGroup/);
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;
