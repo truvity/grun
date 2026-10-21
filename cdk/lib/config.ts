@@ -122,6 +122,32 @@ export function costTags(config: GrunConfig): Required<NonNullable<GrunConfig['c
 /** IAM role names are at most 64 characters. */
 export const MAX_ROLE_NAME = 64;
 
+/**
+ * The memory (GiB) Fargate accepts for each vCPU size. ECS checks the pair when
+ * the task definition is registered, which is after `cdk synth`: a shape off
+ * this table fails the deploy and rolls the stack back.
+ */
+export function fargateMemoryGiB(vcpu: number): number[] | undefined {
+  const range = (from: number, to: number, step = 1): number[] => {
+    const out: number[] = [];
+    for (let m = from; m <= to; m += step) out.push(m);
+    return out;
+  };
+  const table: Record<number, number[]> = {
+    0.25: [0.5, 1, 2],
+    0.5: range(1, 4),
+    1: range(2, 8),
+    2: range(4, 16),
+    4: range(8, 30),
+    8: range(16, 60, 4),
+    16: range(32, 120, 8),
+  };
+  return table[vcpu];
+}
+
+/** API Gateway custom domain names are lowercase DNS names. */
+const DOMAIN_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
 export function stackName(config: GrunConfig): string {
   return `grun-${config.env}`;
 }
@@ -151,6 +177,23 @@ export function crossChecks(config: GrunConfig): string[] {
   for (const s of shapes) {
     if (s.ephemeralStorageGiB !== undefined && s.ephemeralStorageGiB < 21) {
       problems.push(`shapes.${s.label}: ephemeralStorageGiB below the Fargate minimum of 21`);
+    }
+  }
+  for (const s of shapes) {
+    const allowed = fargateMemoryGiB(s.vcpu);
+    if (allowed && !allowed.includes(s.memoryGiB)) {
+      problems.push(`shapes.${s.label}: ${s.memoryGiB} GiB is not a Fargate memory size for ${s.vcpu} vCPU (allowed: ${allowed.join(', ')})`);
+    }
+  }
+  // A regional custom domain takes a certificate of its own region, and AWS
+  // refuses the domain at create time otherwise.
+  for (const org of config.orgs) {
+    const certRegion = org.webhook.certificateArn.split(':')[3];
+    if (certRegion && certRegion !== config.region) {
+      problems.push(`orgs.${org.name}.webhook.certificateArn: certificate is in ${certRegion}, the stack is in ${config.region}`);
+    }
+    if (!DOMAIN_NAME.test(org.webhook.domainName)) {
+      problems.push(`orgs.${org.name}.webhook.domainName: must be a lowercase DNS name`);
     }
   }
   // A variable is either injected from SSM or set in plain text, not both.

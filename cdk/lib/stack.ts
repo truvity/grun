@@ -7,6 +7,7 @@ import {
   Stack,
   StackProps,
   Tags,
+  aws_apigateway as apigateway,
   aws_budgets as budgets,
   aws_cloudwatch as cloudwatch,
   aws_cloudwatch_actions as cwActions,
@@ -251,7 +252,10 @@ export class GrunStack extends Stack {
 
   private addBudget(config: GrunConfig, name: string): void {
     const tag = costTags(config);
-    this.alertTopic.addToResourcePolicy(
+    // Budgets checks at create time that it may publish to the topic, so the
+    // policy must exist before the budget does. The budget only references the
+    // topic, which would not order it after the policy.
+    const policy = this.alertTopic.addToResourcePolicy(
       new iam.PolicyStatement({
         principals: [new iam.ServicePrincipal('budgets.amazonaws.com')],
         actions: ['sns:Publish'],
@@ -260,11 +264,14 @@ export class GrunStack extends Stack {
       }),
     );
     const subscriber = [{ subscriptionType: 'SNS', address: this.alertTopic.topicArn }];
-    const notify = (type: 'ACTUAL' | 'FORECASTED', threshold: number) => ({
-      notification: { notificationType: type, comparisonOperator: 'GREATER_THAN', threshold, thresholdType: 'PERCENTAGE' },
+    // A DAILY budget accepts ACTUAL notifications only: AWS rejects FORECASTED
+    // on it at create time ("DAILY budget only supports notification type as
+    // ACTUAL"), which `cdk synth` cannot see. Do not add a forecast here.
+    const notify = (threshold: number) => ({
+      notification: { notificationType: 'ACTUAL', comparisonOperator: 'GREATER_THAN', threshold, thresholdType: 'PERCENTAGE' },
       subscribers: subscriber,
     });
-    new budgets.CfnBudget(this, 'DailyBudget', {
+    const budget = new budgets.CfnBudget(this, 'DailyBudget', {
       budget: {
         budgetName: `${name}-daily`,
         budgetType: 'COST',
@@ -275,7 +282,16 @@ export class GrunStack extends Stack {
         // Needs the component cost allocation tag to be activated in Billing.
         costFilters: { TagKeyValue: [`user:${tag.componentKey}$${tag.componentValue}`] },
       },
-      notificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
+      notificationsWithSubscribers: [notify(80), notify(100)],
     });
+    if (policy.policyDependable) budget.node.addDependency(policy.policyDependable);
+    // Fail fast: the budget is created in seconds and API Gateway custom
+    // domains with mutual TLS keep provisioning for minutes. A budget that is
+    // rejected after the domains exist rolls back into domains that are still
+    // updating, which cannot be deleted ("There is already an update in
+    // progress for the domain") and leaves the stack in ROLLBACK_FAILED.
+    for (const domain of this.node.findAll()) {
+      if (domain instanceof apigateway.CfnDomainName) domain.addDependency(budget);
+    }
   }
 }
