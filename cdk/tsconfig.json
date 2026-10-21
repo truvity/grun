@@ -14,6 +14,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["bin", "lib", "lambda", "test"],
+  "include": ["bin", "bootstrap", "lib", "lambda", "test"],
   "exclude": ["node_modules", "cdk.out"]
 }

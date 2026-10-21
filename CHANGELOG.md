@@ -4,6 +4,11 @@ Tags `vX.Y.Z` version the repository. The Go module
 `github.com/truvity/grun/boundary` is versioned by its own tags,
 `boundary/vX.Y.Z`.
 
+## Unreleased
+
+- **Add the generated CDK bootstrap template.** CDK's default template applies `--custom-permissions-boundary` to `CloudFormationExecutionRole` only; the file and image publishing, lookup and deployment-action roles got no boundary, which an account that lets people create only bounded roles refuses. `cdk/bootstrap/template.ts` loads the template shipped in the pinned `aws-cdk` package with `CfnInclude` (`BootstraplessSynthesizer`, no metadata) and gives every `AWS::IAM::Role` and `AWS::IAM::User` the execution role's `PermissionsBoundary`; it fails if the execution role has none. The output equals the shipped template except for the added properties. New recipes `just bootstrap-template OUT` and `just bootstrap ACCOUNT REGION BOUNDARY CONFIG`; tests in `cdk/test/bootstrap-template.test.ts`.
+- README: "Permissions boundaries" no longer claims that plain `cdk bootstrap --custom-permissions-boundary` bounds the bootstrap roles; new "The bootstrap template".
+
 ## boundary/v0.2.0
 
 - **Breaking: `Runtime` and `Deploy` return `policy.Document` of `github.com/truvity/aws-structure/policy` (v0.1.0).** The package's own loosely typed `Document` and `Statement` (their fields were `any`) are gone, and with them `Document.JSON()`: marshal with `json.Marshal`, which is canonical, minified and the same bytes as before. `Document.Size()` is now `policy.Document.Size()`, and `Validate()` is new. The module's only dependency is the policy module, which has none of its own; the package still has no AWS SDK or infrastructure-tool dependency.
