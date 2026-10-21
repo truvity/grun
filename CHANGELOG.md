@@ -6,8 +6,8 @@ Tags `vX.Y.Z` version the repository. The Go module
 
 ## Unreleased
 
-- **Add the generated CDK bootstrap template.** CDK's default template applies `--custom-permissions-boundary` to `CloudFormationExecutionRole` only; the file and image publishing, lookup and deployment-action roles got no boundary, which an account that lets people create only bounded roles refuses. `cdk/bootstrap/template.ts` loads the template shipped in the pinned `aws-cdk` package with `CfnInclude` (`BootstraplessSynthesizer`, no metadata) and gives every `AWS::IAM::Role` and `AWS::IAM::User` the execution role's `PermissionsBoundary`; it fails if the execution role has none. The output equals the shipped template except for the added properties. New recipes `just bootstrap-template OUT` and `just bootstrap ACCOUNT REGION BOUNDARY CONFIG`; tests in `cdk/test/bootstrap-template.test.ts`.
-- README: "Permissions boundaries" no longer claims that plain `cdk bootstrap --custom-permissions-boundary` bounds the bootstrap roles; new "The bootstrap template".
+- **Add `cdk.qualifier`.** The CDK qualifier of the bootstrap the stack deploys through, set as the `DefaultStackSynthesizer` qualifier of the stack: its assets, publishing roles and bootstrap-version parameter become `cdk-<qualifier>-*` and `/cdk-bootstrap/<qualifier>/version`. 1 to 10 lowercase letters and digits; the default is CDK's own, `hnb659fds`, so a configuration without it synthesizes what it did before. It must be the qualifier the account was bootstrapped with and the `Qualifier` the Deploy boundary was rendered with. Tests: the synthesized stack and its asset manifest carry the qualifier; the schema accepts only the CDK shape.
+- README: "Permissions boundaries" no longer claims that plain `cdk bootstrap --custom-permissions-boundary` bounds the bootstrap roles. Bootstrapping is the estate's job (the roles must all carry the Deploy boundary, qualifier matching `cdk.qualifier`); the README says what is required, with a generic example.
 
 ## boundary/v0.2.0
 

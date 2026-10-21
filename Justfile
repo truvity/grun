@@ -77,30 +77,5 @@ cdk-synth: cdk-install
 cdk-synth-config CONFIG: cdk-install
     c=$(realpath "{{CONFIG}}") && cd cdk && npx cdk synth --quiet -c config="$c"
 
-# CDK app: write the CDK bootstrap template with the permissions boundary on
-# every role, generated from the template shipped in the pinned aws-cdk CLI
-# (cdk/bootstrap/template.ts). Offline; nothing is deployed. Example:
-#   just bootstrap-template /tmp/bootstrap.json
-bootstrap-template OUT: cdk-install
-    out=$(realpath -m "{{OUT}}") && cd cdk && npx tsx bootstrap/template.ts "$out"
-
-# CDK app: bootstrap an account and region with the generated template, so the
-# boundary named BOUNDARY (a policy that must already exist in the account) is
-# on every bootstrap role. `cdk bootstrap` runs the app, hence the CONFIG.
-# Changes the account: a person or an agent runs this, never CI. Example:
-#   just bootstrap <account> <region> <boundary policy name> <path>/<env>.yaml
-bootstrap ACCOUNT REGION BOUNDARY CONFIG: cdk-install
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cfg=$(realpath "{{CONFIG}}")
-    tpl=$(mktemp --suffix=.json)
-    trap 'rm -f "$tpl"' EXIT
-    cd cdk
-    npx tsx bootstrap/template.ts "$tpl"
-    npx cdk bootstrap "aws://{{ACCOUNT}}/{{REGION}}" \
-      --custom-permissions-boundary "{{BOUNDARY}}" \
-      --template "$tpl" \
-      -c config="$cfg"
-
 # All the checks CI runs
 check: build test lint vuln leak-canary cdk-build cdk-test cdk-synth

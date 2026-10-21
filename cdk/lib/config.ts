@@ -39,6 +39,8 @@ export interface GrunConfig {
     securityGroupIds?: string[];
   };
   iam?: { permissionsBoundary?: string };
+  /** The CDK bootstrap this app deploys through. */
+  cdk?: { qualifier?: string };
   sluis: { readerRoleArn: string; region?: string; syncIntervalMinutes?: number };
   runnerImage: {
     repository: string;
@@ -96,6 +98,14 @@ export const DEFAULT_SHAPES: Shape[] = [
 ];
 
 export const DEFAULT_PERMISSIONS_BOUNDARY = 'pb@tech-grun';
+
+/** CDK's own default qualifier: the one of a plain `cdk bootstrap`. */
+export const DEFAULT_QUALIFIER = 'hnb659fds';
+
+/** The CDK qualifier of the bootstrap the stack deploys through: its roles are cdk-<qualifier>-*. */
+export function qualifier(config: GrunConfig): string {
+  return config.cdk?.qualifier ?? DEFAULT_QUALIFIER;
+}
 
 /** The cost allocation tags: lowercase, in the estate's key style. */
 export const DEFAULT_COST_TAGS = {

@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Match } from 'aws-cdk-lib/assertions';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { roleNameFor } from '../lib/iam';
@@ -9,6 +11,41 @@ beforeAll(() => {
 });
 
 const text = (o: unknown) => JSON.stringify(o);
+
+describe('bootstrap qualifier', () => {
+  /** The asset manifest of the synthesised stack: where its assets go and who publishes them. */
+  const manifest = (t: Synth): string => {
+    const dir = t.app.synth().directory;
+    return fs.readFileSync(path.join(dir, `${t.stack.stackName}.assets.json`), 'utf8');
+  };
+
+  it('deploys through the bootstrap of cdk.qualifier', () => {
+    expect(s.config.cdk?.qualifier).toBe('grun');
+    expect(s.json.Parameters.BootstrapVersion.Default).toBe('/cdk-bootstrap/grun/version');
+    const assets = manifest(s);
+    expect(assets).toContain('cdk-grun-assets-');
+    expect(assets).toContain('cdk-grun-file-publishing-role-');
+    expect(assets).not.toContain('hnb659fds');
+    expect(text(s.json)).not.toContain('hnb659fds');
+  });
+
+  it('follows the configured qualifier', () => {
+    const t = synth((c) => {
+      c.cdk = { qualifier: 'other1' };
+    });
+    expect(t.json.Parameters.BootstrapVersion.Default).toBe('/cdk-bootstrap/other1/version');
+    expect(manifest(t)).toContain('cdk-other1-assets-');
+    expect(manifest(t)).not.toContain('cdk-grun-');
+  });
+
+  it("is CDK's default qualifier when the file sets none", () => {
+    const t = synth((c) => {
+      delete c.cdk;
+    });
+    expect(t.json.Parameters.BootstrapVersion.Default).toBe('/cdk-bootstrap/hnb659fds/version');
+    expect(manifest(t)).toContain('cdk-hnb659fds-assets-');
+  });
+});
 
 describe('identity', () => {
   it('names the stack grun-<env>', () => {

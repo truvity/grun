@@ -13,6 +13,7 @@ export function exampleConfig(): GrunConfig {
 }
 
 export interface Synth {
+  app: App;
   config: GrunConfig;
   stack: GrunStack;
   template: Template;
@@ -31,7 +32,7 @@ export function synth(mutate?: (c: GrunConfig) => void): Synth {
   const app = new App({ context: cdkJson.context });
   const stack = new GrunStack(app, stackName(config), { config, caFile, env: { region: config.region } });
   const template = Template.fromStack(stack);
-  return { config, stack, template, json: template.toJSON() };
+  return { app, config, stack, template, json: template.toJSON() };
 }
 
 /** All resources of a type as [logicalId, resource]. */
