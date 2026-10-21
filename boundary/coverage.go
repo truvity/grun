@@ -76,11 +76,11 @@ func DeployCoverage(p Params) (Coverage, error) {
 			continue
 		}
 
-		for _, a := range asList(s.Action) {
+		for _, a := range s.Action {
 			ns, act, _ := strings.Cut(a, ":")
 			allowed[ns] = true
 
-			if act == "*" && s.Resource == "*" && s.Condition == nil {
+			if act == "*" && slices.Equal(s.Resource, []string{"*"}) && len(s.Condition) == 0 {
 				full[ns] = true
 			}
 		}
@@ -105,17 +105,6 @@ func DeployCoverage(p Params) (Coverage, error) {
 	}
 
 	return c, nil
-}
-
-func asList(v any) []string {
-	switch x := v.(type) {
-	case string:
-		return []string{x}
-	case []string:
-		return x
-	}
-
-	return nil
 }
 
 func sortedKeys(m map[string]bool) []string {

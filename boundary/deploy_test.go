@@ -5,21 +5,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/truvity/aws-structure/policy"
 	"github.com/truvity/grun/boundary"
 )
 
-func asList(v any) []string {
-	switch x := v.(type) {
-	case string:
-		return []string{x}
-	case []string:
-		return x
+// conditionValues returns the values of one condition of the statement, or nil.
+func conditionValues(s policy.Statement, operator, key string) []string {
+	for _, c := range s.Condition {
+		if c.Operator == operator && c.Key == key {
+			return c.Values
+		}
 	}
 
 	return nil
 }
 
-func deploy(t *testing.T) boundary.Document {
+func deploy(t *testing.T) policy.Document {
 	t.Helper()
 
 	d, err := boundary.Deploy(params())
@@ -32,7 +33,7 @@ func deploy(t *testing.T) boundary.Document {
 
 func TestDeployIsAnAllowList(t *testing.T) {
 	for _, s := range deploy(t).Statement {
-		if s.Effect == "Allow" && slices.Contains(asList(s.Action), "*") {
+		if s.Effect == "Allow" && slices.Contains(s.Action, "*") {
 			t.Errorf("statement %s allows every action", s.Sid)
 		}
 
@@ -55,12 +56,12 @@ func TestDeployIAMWritesAreScoped(t *testing.T) {
 			continue
 		}
 
-		for _, a := range asList(s.Action) {
+		for _, a := range s.Action {
 			if !strings.HasPrefix(a, "iam:") || readOnly(a) {
 				continue
 			}
 
-			res := asList(s.Resource)
+			res := s.Resource
 			scoped := len(res) > 0
 			for _, r := range res {
 				if !strings.Contains(r, ":role/") {
@@ -70,14 +71,14 @@ func TestDeployIAMWritesAreScoped(t *testing.T) {
 
 			switch {
 			case a == "iam:CreateServiceLinkedRole":
-				if s.Condition == nil {
+				if len(s.Condition) == 0 {
 					t.Errorf("%s: iam:CreateServiceLinkedRole without a service condition", s.Sid)
 				}
 			case !scoped:
 				t.Errorf("%s: %s is not scoped to roles: %v", s.Sid, a, s.Resource)
 			}
 
-			if (a == "iam:CreateRole" || a == "iam:PutRolePermissionsBoundary") && s.Condition["ArnLike"] == nil {
+			if (a == "iam:CreateRole" || a == "iam:PutRolePermissionsBoundary") && conditionValues(s, "ArnLike", "iam:PermissionsBoundary") == nil {
 				t.Errorf("%s: %s without the permissions boundary condition", s.Sid, a)
 			}
 		}
@@ -88,18 +89,18 @@ func TestDeployDelegatesExactlyTheRuntimeBoundary(t *testing.T) {
 	var found bool
 
 	for _, s := range deploy(t).Statement {
-		if !slices.Contains(asList(s.Action), "iam:CreateRole") {
+		if !slices.Contains(s.Action, "iam:CreateRole") {
 			continue
 		}
 
 		found = true
-		got := s.Condition["ArnLike"].(map[string]any)["iam:PermissionsBoundary"]
+		got := conditionValues(s, "ArnLike", "iam:PermissionsBoundary")
 
-		if got != "arn:part:iam::*:policy/bound@tech-grun" {
+		if !slices.Equal(got, []string{"arn:part:iam::*:policy/bound@tech-grun"}) {
 			t.Errorf("iam:CreateRole is conditioned on %v, want exactly the runtime boundary", got)
 		}
 
-		if !slices.Equal(asList(s.Action), []string{"iam:CreateRole", "iam:PutRolePermissionsBoundary"}) {
+		if !slices.Equal(s.Action, []string{"iam:CreateRole", "iam:PutRolePermissionsBoundary"}) {
 			t.Errorf("the delegating statement has actions %v", s.Action)
 		}
 	}
@@ -114,7 +115,7 @@ func TestDeployDeniesWhatItShould(t *testing.T) {
 
 	for _, s := range deploy(t).Statement {
 		if s.Effect == "Deny" {
-			for _, a := range asList(s.Action) {
+			for _, a := range s.Action {
 				denied[a] = true
 			}
 		}
@@ -143,7 +144,7 @@ func TestDeployOptionalInputs(t *testing.T) {
 			t.Error("AllowReadBuckets present with no ReadBuckets")
 		}
 
-		if s.Sid == "AllowSSMRead" && len(asList(s.Resource)) != 1 {
+		if s.Sid == "AllowSSMRead" && len(s.Resource) != 1 {
 			t.Errorf("AllowSSMRead has %v, want only the bootstrap version parameter", s.Resource)
 		}
 	}

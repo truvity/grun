@@ -1,6 +1,10 @@
 package boundary
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/truvity/aws-structure/policy"
+)
 
 // TestLimitedTypesAreNotStale holds limitedTypes in step with the document:
 // every namespace the document allows narrowly has an entry, and no entry
@@ -25,12 +29,12 @@ func TestLimitedTypesAreNotStale(t *testing.T) {
 }
 
 func TestCheckSize(t *testing.T) {
-	big := Document{Version: policyVersion, Statement: []Statement{{Sid: "X", Effect: allow, Action: "*", Resource: make([]string, 4000)}}}
+	big := policy.Document{Statement: []policy.Statement{{Sid: "X", Effect: allow, Action: []string{"*"}, Resource: make([]string, 4000)}}}
 	if err := checkSize("Big", big); err == nil {
 		t.Error("a document over the limit was accepted")
 	}
 
-	small := Document{Version: policyVersion, Statement: []Statement{{Sid: "X", Effect: allow, Action: "*", Resource: "*"}}}
+	small := policy.Document{Statement: []policy.Statement{{Sid: "X", Effect: allow, Action: []string{"*"}, Resource: []string{"*"}}}}
 	if err := checkSize("Small", small); err != nil {
 		t.Error(err)
 	}

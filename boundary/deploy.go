@@ -3,6 +3,8 @@ package boundary
 import (
 	"errors"
 	"fmt"
+
+	"github.com/truvity/aws-structure/policy"
 )
 
 // The services the Deploy boundary lets a role be passed to, and the
@@ -71,9 +73,9 @@ var (
 //
 // The document stays under [MaxSize]; Deploy returns an error if it ever does
 // not.
-func Deploy(p Params) (Document, error) {
+func Deploy(p Params) (policy.Document, error) {
 	if errs := append(p.validate(), p.validateDeploy()...); len(errs) > 0 {
-		return Document{}, errors.Join(append([]error{errors.New("boundary: invalid Deploy parameters")}, errs...)...)
+		return policy.Document{}, errors.Join(append([]error{errors.New("boundary: invalid Deploy parameters")}, errs...)...)
 	}
 
 	part := p.partition()
@@ -87,13 +89,13 @@ func Deploy(p Params) (Document, error) {
 		stackServices = append(stackServices, s+":*")
 	}
 
-	stmts := []Statement{
-		{Sid: "AllowIAMRead", Effect: allow, Action: []string{"iam:Get*", "iam:List*"}, Resource: "*"},
+	stmts := []policy.Statement{
+		{Sid: "AllowIAMRead", Effect: allow, Action: []string{"iam:Get*", "iam:List*"}, Resource: star()},
 		{
 			// The only way a role of the stack comes to be: with the Runtime boundary.
 			Sid: "AllowCreateStackRoles", Effect: allow, Action: []string{"iam:CreateRole", "iam:PutRolePermissionsBoundary"},
-			Resource:  stackRoles,
-			Condition: map[string]any{"ArnLike": map[string]any{"iam:PermissionsBoundary": p.policyARN(p.RuntimeBoundaryName)}},
+			Resource:  []string{stackRoles},
+			Condition: []policy.Condition{{Operator: "ArnLike", Key: "iam:PermissionsBoundary", Values: []string{p.policyARN(p.RuntimeBoundaryName)}}},
 		},
 		{
 			Sid: "AllowManageStackRoles", Effect: allow,
@@ -102,21 +104,21 @@ func Deploy(p Params) (Document, error) {
 				"iam:DeleteRole", "iam:TagRole", "iam:UntagRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
 				"iam:UpdateAssumeRolePolicy",
 			},
-			Resource: stackRoles,
+			Resource: []string{stackRoles},
 		},
 		{
-			Sid: "AllowPassStackAndBootstrapRoles", Effect: allow, Action: "iam:PassRole",
+			Sid: "AllowPassStackAndBootstrapRoles", Effect: allow, Action: []string{"iam:PassRole"},
 			Resource:  []string{stackRoles, bootstrapRoles},
-			Condition: map[string]any{"StringEquals": map[string]any{"iam:PassedToService": deployPassedToServices}},
+			Condition: []policy.Condition{{Operator: "StringEquals", Key: "iam:PassedToService", Values: deployPassedToServices}},
 		},
 		{
-			Sid: "AllowServiceLinkedRoles", Effect: allow, Action: "iam:CreateServiceLinkedRole", Resource: "*",
-			Condition: map[string]any{"StringEquals": map[string]any{"iam:AWSServiceName": deployServiceLinkedRoles}},
+			Sid: "AllowServiceLinkedRoles", Effect: allow, Action: []string{"iam:CreateServiceLinkedRole"}, Resource: star(),
+			Condition: []policy.Condition{{Operator: "StringEquals", Key: "iam:AWSServiceName", Values: deployServiceLinkedRoles}},
 		},
 		// The deploy role reaches the publishing and lookup roles; the CLI reaches
 		// them through the deploy role.
-		{Sid: "AllowAssumeBootstrapRoles", Effect: allow, Action: "sts:AssumeRole", Resource: bootstrapRoles},
-		{Sid: "AllowStackServices", Effect: allow, Action: stackServices, Resource: "*"},
+		{Sid: "AllowAssumeBootstrapRoles", Effect: allow, Action: []string{"sts:AssumeRole"}, Resource: []string{bootstrapRoles}},
+		{Sid: "AllowStackServices", Effect: allow, Action: stackServices, Resource: star()},
 		{
 			Sid: "AllowEC2SecurityGroupsAndLookups", Effect: allow,
 			Action: []string{
@@ -127,11 +129,11 @@ func Deploy(p Params) (Document, error) {
 				"elasticloadbalancing:Describe*", "route53:Get*", "route53:List*",
 				"acm:DescribeCertificate", "acm:GetCertificate", "acm:ListCertificates", "acm:ListTagsForCertificate",
 			},
-			Resource: "*",
+			Resource: star(),
 		},
 		{
 			Sid: "AllowEC2SecurityGroupTags", Effect: allow, Action: []string{"ec2:CreateTags", "ec2:DeleteTags"},
-			Resource: fmt.Sprintf("arn:%s:ec2:*:*:security-group/*", part),
+			Resource: []string{fmt.Sprintf("arn:%s:ec2:*:*:security-group/*", part)},
 		},
 		{
 			Sid: "AllowKMSUse", Effect: allow,
@@ -139,21 +141,21 @@ func Deploy(p Params) (Document, error) {
 				"kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey",
 				"kms:Sign", "kms:Verify", "kms:GetPublicKey",
 			},
-			Resource: "*",
+			Resource: star(),
 		},
 		{
 			Sid: "AllowKMSGrantsForAWSResources", Effect: allow,
-			Action: []string{"kms:CreateGrant", "kms:ListGrants", "kms:RetireGrant"}, Resource: "*",
-			Condition: map[string]any{"Bool": map[string]any{"kms:GrantIsForAWSResource": "true"}},
+			Action: []string{"kms:CreateGrant", "kms:ListGrants", "kms:RetireGrant"}, Resource: star(),
+			Condition: []policy.Condition{{Operator: "Bool", Key: "kms:GrantIsForAWSResource", Values: []string{"true"}}},
 		},
 		{
-			Sid: "AllowECRRepositories", Effect: allow, Action: "ecr:*",
+			Sid: "AllowECRRepositories", Effect: allow, Action: []string{"ecr:*"},
 			Resource: []string{
 				fmt.Sprintf("arn:%s:ecr:*:*:repository/%s*", part, p.RolePrefix),
 				fmt.Sprintf("arn:%s:ecr:*:*:repository/cdk-%s-container-assets-*", part, p.Qualifier),
 			},
 		},
-		{Sid: "AllowECRToken", Effect: allow, Action: "ecr:GetAuthorizationToken", Resource: "*"},
+		{Sid: "AllowECRToken", Effect: allow, Action: []string{"ecr:GetAuthorizationToken"}, Resource: star()},
 		{
 			// What the deploy and publishing roles do with the bootstrap's bucket;
 			// CloudFormation and Lambda read the templates and the code from it.
@@ -164,7 +166,7 @@ func Deploy(p Params) (Document, error) {
 			},
 			Resource: withObjects(assets),
 		},
-		{Sid: "AllowStackBuckets", Effect: allow, Action: "s3:*", Resource: withObjects(stackBuckets)},
+		{Sid: "AllowStackBuckets", Effect: allow, Action: []string{"s3:*"}, Resource: withObjects(stackBuckets)},
 	}
 
 	if len(p.ReadBuckets) > 0 {
@@ -173,7 +175,7 @@ func Deploy(p Params) (Document, error) {
 			buckets = append(buckets, fmt.Sprintf("arn:%s:s3:::%s", part, b))
 		}
 
-		stmts = append(stmts, Statement{
+		stmts = append(stmts, policy.Statement{
 			Sid: "AllowReadBuckets", Effect: allow,
 			Action:   []string{"s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketLocation", "s3:ListBucket"},
 			Resource: withObjects(buckets...),
@@ -186,31 +188,33 @@ func Deploy(p Params) (Document, error) {
 	}
 
 	stmts = append(stmts,
-		Statement{
+		policy.Statement{
 			Sid: "AllowSSMRead", Effect: allow,
 			Action: []string{"ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"}, Resource: params,
+			// One parameter path stays an array, as the document has always been written.
+			Arrays: policy.ArrayResource,
 		},
-		Statement{Sid: "AllowSSMDescribe", Effect: allow, Action: "ssm:DescribeParameters", Resource: "*"},
-		Statement{
-			Sid: "AllowStackBudgets", Effect: allow, Action: "budgets:*",
-			Resource: fmt.Sprintf("arn:%s:budgets::*:budget/%s*", part, p.RolePrefix),
+		policy.Statement{Sid: "AllowSSMDescribe", Effect: allow, Action: []string{"ssm:DescribeParameters"}, Resource: star()},
+		policy.Statement{
+			Sid: "AllowStackBudgets", Effect: allow, Action: []string{"budgets:*"},
+			Resource: []string{fmt.Sprintf("arn:%s:budgets::*:budget/%s*", part, p.RolePrefix)},
 		},
 
 		// Denies, for the day an allow above is widened by mistake.
-		Statement{
+		policy.Statement{
 			Sid: "DenyReadSecretValues", Effect: deny,
-			Action: []string{"secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"}, Resource: "*",
+			Action: []string{"secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"}, Resource: star(),
 		},
-		Statement{
+		policy.Statement{
 			Sid: "DenyOrganizationAndBilling", Effect: deny,
 			Action:   []string{"organizations:*", "account:*", "billing:*", "aws-portal:*", "payments:*"},
-			Resource: "*",
+			Resource: star(),
 		},
 	)
 
-	d := Document{Version: policyVersion, Statement: stmts}
+	d := policy.Document{Version: policy.Version, Statement: stmts}
 	if err := checkSize("Deploy", d); err != nil {
-		return Document{}, err
+		return policy.Document{}, err
 	}
 
 	return d, nil
