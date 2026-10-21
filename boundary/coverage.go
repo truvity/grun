@@ -4,6 +4,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/truvity/aws-structure/policy"
 )
 
 // Coverage says which services the Deploy boundary lets the bootstrap roles
@@ -31,6 +33,14 @@ type Coverage struct {
 	// CustomResourceNamespace is the namespace of the function that backs a
 	// "Custom::" resource: CloudFormation invokes it.
 	CustomResourceNamespace string `json:"customResourceNamespace"`
+	// ServiceLinkedRoles are the services (iam:AWSServiceName) whose
+	// service-linked role the document lets CloudFormation create.
+	ServiceLinkedRoles []string `json:"serviceLinkedRoles"`
+	// NeedsServiceLinkedRole maps a CloudFormation resource type to the
+	// services whose service-linked role creating it can implicitly create. A
+	// type listed here is covered only if the document allows each of its
+	// services in ServiceLinkedRoles.
+	NeedsServiceLinkedRole map[string][]string `json:"needsServiceLinkedRole"`
 }
 
 // limitedTypes are the CloudFormation resource types the narrow allowances of
@@ -49,6 +59,22 @@ var limitedTypes = map[string][]string{
 	"s3":                   {"AWS::S3::Bucket", "AWS::S3::BucketPolicy"},
 	"ssm":                  nil,
 	"sts":                  nil,
+}
+
+// slrCreatingTypes maps the CloudFormation resource types that implicitly
+// create a service-linked role, the first time one is created in an account,
+// to the service of that role (iam:AWSServiceName). A type missing here is
+// assumed to need none, so adding a resource type of a service not yet used
+// means checking that service's documentation for a service-linked role. The
+// table lists more than the stack uses, so that a type added later is already
+// known; the types of the stack must all be listed for the roles in
+// [deployServiceLinkedRoles] (a test holds the two in step).
+var slrCreatingTypes = map[string][]string{
+	"AWS::ApiGateway::DomainName":                  {"ops.apigateway.amazonaws.com"},
+	"AWS::CodeStarNotifications::NotificationRule": {"codestar-notifications.amazonaws.com"},
+	"AWS::ECS::Cluster":                            {"ecs.amazonaws.com"},
+	"AWS::ECS::Service":                            {"ecs.amazonaws.com"},
+	"AWS::ElasticLoadBalancingV2::LoadBalancer":    {"elasticloadbalancing.amazonaws.com"},
 }
 
 // irregularNamespaces are the CloudFormation services whose IAM namespace is
@@ -93,6 +119,8 @@ func DeployCoverage(p Params) (Coverage, error) {
 		Namespaces:              irregularNamespaces,
 		Exempt:                  []string{"AWS::CDK::Metadata"},
 		CustomResourceNamespace: "lambda",
+		ServiceLinkedRoles:      serviceLinkedRoleServices(d),
+		NeedsServiceLinkedRole:  slrCreatingTypes,
 	}
 
 	for ns := range allowed {
@@ -105,6 +133,29 @@ func DeployCoverage(p Params) (Coverage, error) {
 	}
 
 	return c, nil
+}
+
+// serviceLinkedRoleServices returns the iam:AWSServiceName values under which
+// the document allows iam:CreateServiceLinkedRole. It reads the rendered
+// document, so the coverage cannot drift from it.
+func serviceLinkedRoleServices(d policy.Document) []string {
+	out := []string{}
+
+	for _, s := range d.Statement {
+		if s.Effect != allow || !slices.Contains(s.Action, "iam:CreateServiceLinkedRole") {
+			continue
+		}
+
+		for _, c := range s.Condition {
+			if c.Key == "iam:AWSServiceName" && c.Operator == "StringEquals" {
+				out = append(out, c.Values...)
+			}
+		}
+	}
+
+	slices.Sort(out)
+
+	return out
 }
 
 func sortedKeys(m map[string]bool) []string {

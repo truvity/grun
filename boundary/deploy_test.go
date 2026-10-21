@@ -85,6 +85,33 @@ func TestDeployIAMWritesAreScoped(t *testing.T) {
 	}
 }
 
+// TestDeployServiceLinkedRoles holds the SLR allowance: only for the services
+// the stack's resource types need, only on service-linked role ARNs.
+func TestDeployServiceLinkedRoles(t *testing.T) {
+	var found bool
+
+	for _, s := range deploy(t).Statement {
+		if !slices.Contains(s.Action, "iam:CreateServiceLinkedRole") {
+			continue
+		}
+
+		found = true
+
+		if !slices.Equal(s.Resource, []string{"arn:part:iam::*:role/aws-service-role/*"}) {
+			t.Errorf("%s: resource %v, want only service-linked role ARNs", s.Sid, s.Resource)
+		}
+
+		want := []string{"codestar-notifications.amazonaws.com", "ecs.amazonaws.com", "ops.apigateway.amazonaws.com"}
+		if got := conditionValues(s, "StringEquals", "iam:AWSServiceName"); !slices.Equal(got, want) {
+			t.Errorf("%s: services %v, want %v", s.Sid, got, want)
+		}
+	}
+
+	if !found {
+		t.Error("no statement allows iam:CreateServiceLinkedRole")
+	}
+}
+
 func TestDeployDelegatesExactlyTheRuntimeBoundary(t *testing.T) {
 	var found bool
 
@@ -177,6 +204,18 @@ func TestCoverage(t *testing.T) {
 	for _, ns := range []string{"iam", "s3", "ec2", "ecr", "kms", "ssm"} {
 		if _, ok := c.Limited[ns]; !ok {
 			t.Errorf("%s is not limited", ns)
+		}
+	}
+
+	for _, typ := range []string{"AWS::ApiGateway::DomainName", "AWS::ECS::Cluster", "AWS::CodeStarNotifications::NotificationRule"} {
+		for _, svc := range c.NeedsServiceLinkedRole[typ] {
+			if !slices.Contains(c.ServiceLinkedRoles, svc) {
+				t.Errorf("%s needs the %s service-linked role, which the document does not allow", typ, svc)
+			}
+		}
+
+		if len(c.NeedsServiceLinkedRole[typ]) == 0 {
+			t.Errorf("%s is not in the service-linked role table", typ)
 		}
 	}
 

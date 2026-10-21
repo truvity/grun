@@ -1,6 +1,7 @@
 package boundary
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/truvity/aws-structure/policy"
@@ -37,5 +38,38 @@ func TestCheckSize(t *testing.T) {
 	small := policy.Document{Statement: []policy.Statement{{Sid: "X", Effect: allow, Action: []string{"*"}, Resource: []string{"*"}}}}
 	if err := checkSize("Small", small); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestServiceLinkedRolesAreExactlyTheNeededOnes holds the allowed
+// service-linked roles in step with the resource types that create them: none
+// is allowed that no type needs, and the coverage reports what the document
+// allows.
+func TestServiceLinkedRolesAreExactlyTheNeededOnes(t *testing.T) {
+	if !slices.IsSorted(deployServiceLinkedRoles) {
+		t.Errorf("deployServiceLinkedRoles is not sorted: %v", deployServiceLinkedRoles)
+	}
+
+	needed := map[string]bool{}
+
+	for _, services := range slrCreatingTypes {
+		for _, s := range services {
+			needed[s] = true
+		}
+	}
+
+	for _, s := range deployServiceLinkedRoles {
+		if !needed[s] {
+			t.Errorf("%s is allowed but no resource type in slrCreatingTypes needs it", s)
+		}
+	}
+
+	c, err := DeployCoverage(Params{RolePrefix: "grun-", RuntimeBoundaryName: "x", Qualifier: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.Equal(c.ServiceLinkedRoles, deployServiceLinkedRoles) {
+		t.Errorf("coverage lists %v, the document allows %v", c.ServiceLinkedRoles, deployServiceLinkedRoles)
 	}
 }

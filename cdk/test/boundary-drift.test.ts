@@ -11,6 +11,12 @@ import { Synth, synth } from './helpers';
  * be covered, so a stack change cannot outgrow the boundary unnoticed: the
  * deploy would otherwise fail at the first resource of the new service, in
  * the account, after the change merged.
+ *
+ * It also covers service-linked roles. A resource type of some services makes
+ * AWS create the service's role implicitly, in the deploy role's name, the
+ * first time one exists in an account; the boundary must allow
+ * iam:CreateServiceLinkedRole for that service (iam:AWSServiceName), or a first
+ * deploy into a fresh account fails at that resource.
  */
 interface Coverage {
   allowed: string[];
@@ -19,6 +25,8 @@ interface Coverage {
   namespaces: Record<string, string>;
   exempt: string[];
   customResourceNamespace: string;
+  serviceLinkedRoles: string[];
+  needsServiceLinkedRole: Record<string, string[]>;
 }
 
 const COVERAGE = path.join(__dirname, 'boundary-coverage.generated.json');
@@ -58,6 +66,19 @@ export function uncovered(c: Coverage, types: string[]): string[] {
   return problems;
 }
 
+/** The service-linked roles `types` can create that the boundary does not allow. */
+export function missingServiceLinkedRoles(c: Coverage, types: string[]): string[] {
+  const problems: string[] = [];
+  for (const type of new Set(types)) {
+    for (const service of c.needsServiceLinkedRole[type] ?? []) {
+      if (!c.serviceLinkedRoles.includes(service)) {
+        problems.push(`${type}: creating it can create the service-linked role of ${service}, which the boundary does not allow (iam:AWSServiceName)`);
+      }
+    }
+  }
+  return problems;
+}
+
 describe('deploy permissions boundary', () => {
   let s: Synth;
   let coverage: Coverage;
@@ -84,5 +105,27 @@ describe('deploy permissions boundary', () => {
 
   it('maps the irregular services', () => {
     expect(uncovered(coverage, ['AWS::StepFunctions::StateMachine', 'AWS::ApiGatewayV2::Api', 'AWS::CodeStarNotifications::NotificationRule'])).toEqual([]);
+  });
+
+  it('allows the service-linked role of every resource type of the synthesised stack that creates one', () => {
+    const types = Object.values<any>(s.json.Resources).map((r) => r.Type as string);
+    expect(missingServiceLinkedRoles(coverage, types)).toEqual([]);
+    // The stack's own: if these stop being listed, the table is stale, not the stack.
+    expect(Object.keys(coverage.needsServiceLinkedRole)).toEqual(
+      expect.arrayContaining(['AWS::ApiGateway::DomainName', 'AWS::ECS::Cluster', 'AWS::CodeStarNotifications::NotificationRule']),
+    );
+  });
+
+  it('is not vacuous for service-linked roles: a missing one is reported', () => {
+    const without = (service: string): Coverage => ({
+      ...coverage,
+      serviceLinkedRoles: coverage.serviceLinkedRoles.filter((x) => x !== service),
+    });
+    const types = ['AWS::ApiGateway::DomainName', 'AWS::ECS::Cluster', 'AWS::Lambda::Function'];
+    expect(missingServiceLinkedRoles(without('ops.apigateway.amazonaws.com'), types)).toEqual([
+      expect.stringContaining('AWS::ApiGateway::DomainName'),
+    ]);
+    expect(missingServiceLinkedRoles(without('ecs.amazonaws.com'), types)).toEqual([expect.stringContaining('AWS::ECS::Cluster')]);
+    expect(missingServiceLinkedRoles(coverage, types)).toEqual([]);
   });
 });
