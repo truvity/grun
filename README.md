@@ -43,7 +43,7 @@ What it builds, in short:
   Cloudflare Authenticated Origin Pulls), default endpoint disabled.
 - **Guards**: a provider-selector Lambda routes by label and refuses a job when
   the cluster already runs the configured number of tasks; a daily AWS Budget
-  with alerts; alarms; log retention everywhere.
+  with alerts; alarms; a failed runner image build alerts the same topic; log retention everywhere.
 - **Identity**: every IAM role is `grun-<env>-...` with no path and carries the
   permissions boundary stack-wide.
 - **Warm capacity**: runners started ahead of demand on a weekly schedule.
