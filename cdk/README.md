@@ -25,6 +25,7 @@ repository.
 | `lib/access.ts` | webhook access: API Gateway custom domain with mutual TLS |
 | `lib/iam.ts` | role naming (`grun-<env>-...`, no path) and the permissions boundary |
 | `lib/config.ts` | configuration type, defaults, validation |
+| `bootstrap/template.ts` | the generated CDK bootstrap template (a boundary on every bootstrap role) and its CLI |
 | `lambda/provider-selector/` | routing by label and the task cap |
 | `lambda/secret-sync/` | GitHub Apps from SSM into Secrets Manager |
 | `test/` | unit tests (`aws-cdk-lib/assertions` on the synthesised stack, the Lambdas) |
@@ -38,7 +39,7 @@ configuration names them):
    get a public IP; there is no NAT. If the tasks must reach private services,
    admit the runner security group (the stack output `RunnerSecurityGroupId`, or
    your own, listed in `network.securityGroupIds`) on the other side.
-2. The permissions boundary policy (default name `pb@tech-grun`) in the account. The Go module `boundary/` renders the document, and the bootstrap roles' own boundary; see "Permissions boundaries" in the root README.
+2. The permissions boundary policy (default name `pb@tech-grun`) in the account. The Go module `boundary/` renders the document, and the bootstrap roles' own boundary; see "Permissions boundaries" in the root README. CDK itself must be bootstrapped with the generated template (`just bootstrap`, root README "The bootstrap template"): the default template leaves four of the five bootstrap roles without the boundary.
 3. An ECR pull-through cache for the registry that holds ci-plane's runner
    image, and the image tag named in `runnerImage.version`.
 4. For each organisation: an ACM certificate for its webhook domain in the stack
