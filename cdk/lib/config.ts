@@ -72,6 +72,7 @@ export interface GrunConfig {
     goCacheBucket?: string;
     goCacheRegion?: string;
     buildxCache?: string;
+    cacheWrites?: 'release-credentials';
     extra?: Record<string, string>;
   };
   buildkit?: {
@@ -278,6 +279,7 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (e.goCacheBucket) names.CI_RUNNER_GOCACHE_S3_BUCKET = true;
   if (e.goCacheRegion) names.CI_RUNNER_GOCACHE_S3_REGION = true;
   if (e.buildxCache) names.CI_RUNNER_BUILDX_CACHE = true;
+  if (e.cacheWrites) names.CI_RUNNER_CACHE_WRITES = true;
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
   if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;

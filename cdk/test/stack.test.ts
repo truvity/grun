@@ -215,6 +215,7 @@ describe('providers', () => {
       CI_RUNNER_GOCACHE_S3_BUCKET: 'example-ci-cache',
       CI_RUNNER_GOCACHE_S3_REGION: 'eu-central-1',
       CI_RUNNER_BUILDX_CACHE: 'account-id.dkr.ecr.eu-central-1.amazonaws.com/ci/buildkit-cache',
+      CI_RUNNER_CACHE_WRITES: 'release-credentials',
       CI_BUILDKIT_TLS_DIR: '/etc/ci-buildkit-tls',
       CI_BUILDKIT_TLS_SERVERNAME: 'buildkitd.example.test',
     });

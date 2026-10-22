@@ -63,6 +63,9 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   if (e.goCacheBucket) env.CI_RUNNER_GOCACHE_S3_BUCKET = e.goCacheBucket;
   if (e.goCacheRegion) env.CI_RUNNER_GOCACHE_S3_REGION = e.goCacheRegion;
   if (e.buildxCache) env.CI_RUNNER_BUILDX_CACHE = e.buildxCache;
+  // The tier's task identity only reads those caches; a write needs the credentials of a role
+  // the job assumed itself. The shared actions switch their save steps on this.
+  if (e.cacheWrites) env.CI_RUNNER_CACHE_WRITES = e.cacheWrites;
   // Node (installed by proto or devbox, not the system one) does not read the
   // system store that holds the private CA; the ARC runners exported this too.
   if (config.runnerImage.extraCertificates) env.NODE_EXTRA_CA_CERTS = SYSTEM_CA_BUNDLE;

@@ -89,6 +89,17 @@ describe('config', () => {
     expect(() => validate(e)).toThrow(/goCacheRegion/);
   });
 
+  it('accepts runnerEnvironment.cacheWrites release-credentials only', () => {
+    const c: any = exampleConfig();
+    c.runnerEnvironment.cacheWrites = 'release-credentials';
+    expect(() => validate(c)).not.toThrow();
+    for (const bad of ['read-write', '', 'Release-Credentials', true]) {
+      const d: any = exampleConfig();
+      d.runnerEnvironment.cacheWrites = bad;
+      expect(() => validate(d), `cacheWrites=${JSON.stringify(bad)}`).toThrow(/cacheWrites/);
+    }
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;
