@@ -233,7 +233,7 @@ describe('providers', () => {
     expect(e.CI_RUNNER_GRADLE_BUILD_CACHE).toBe('https://gradle.example.test/gradle/cache');
     // A tier that must read no writable cache names the registry only.
     const t = synth((c) => {
-      delete c.runnerEnvironment.gradleBuildCache;
+      delete c.runnerEnvironment!.gradleBuildCache;
     });
     expect(env(t.json, 'acmefglarge').CI_RUNNER_MAVEN_REGISTRY).toBe('https://maven.example.test/maven');
     expect(env(t.json, 'acmefglarge').CI_RUNNER_GRADLE_BUILD_CACHE).toBeUndefined();

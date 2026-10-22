@@ -52,7 +52,7 @@ describe('config', () => {
 
   it('accepts a Maven registry and a Gradle build cache that are http(s) URLs, and nothing that could carry a second value', () => {
     for (const key of ['mavenRegistry', 'gradleBuildCache']) {
-      for (const ok of ['https://golang.cache.build.devel.truvity.private/maven', 'http://cache.example.test/gradle/cache']) {
+      for (const ok of ['https://cache.example.test/maven', 'http://cache.example.test/gradle/cache']) {
         const c: any = exampleConfig();
         c.runnerEnvironment[key] = ok;
         expect(() => validate(c), `${key} ${ok}`).not.toThrow();
