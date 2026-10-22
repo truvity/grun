@@ -155,6 +155,16 @@
           "type": "string",
           "pattern": "^https?://[^\\s]+$"
         },
+        "mavenRegistry": {
+          "description": "CI_RUNNER_MAVEN_REGISTRY: the base of a Maven pull-through cache with one path per upstream (<base>/central, <base>/google, <base>/gradle-plugins), an http(s) URL without spaces (ci-plane's cache-redirect serves it under /maven). The shared setup-devbox step probes it, and Gradle builds then resolve their dependencies and plugins through it.",
+          "type": "string",
+          "pattern": "^https?://[^\\s]+$"
+        },
+        "gradleBuildCache": {
+          "description": "CI_RUNNER_GRADLE_BUILD_CACHE: the URL of Gradle's remote build cache (the HTTP protocol), an http(s) URL without spaces, ending where the key begins (ci-plane's cache-redirect serves it under /gradle/cache). The cache is WRITABLE by the jobs: set it on the preview tier only, never on a tier that must read no cache a job can write.",
+          "type": "string",
+          "pattern": "^https?://[^\\s]+$"
+        },
         "bazelRemoteCache": { "description": "CI_RUNNER_BAZEL_REMOTE_CACHE", "type": "string" },
         "remoteBuilders": { "description": "CI_RUNNER_REMOTE_BUILDERS", "type": "string" },
         "extra": {

@@ -51,6 +51,11 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   // The image's nix.conf lists only the upstream cache; this overlay (it wins) puts the
   // env's pull-through cache first. Task environment, so no image rebuild.
   if (e.nixSubstituter) env.NIX_CONFIG = nixConfig(e.nixSubstituter);
+  // Gradle: the Maven pull-through cache and the remote build cache. The shared setup-devbox
+  // step probes each, exports CI_MAVEN_REGISTRY / CI_GRADLE_BUILD_CACHE and installs an init
+  // script. A tier that must not read a cache its jobs can write sets only the first.
+  if (e.mavenRegistry) env.CI_RUNNER_MAVEN_REGISTRY = e.mavenRegistry;
+  if (e.gradleBuildCache) env.CI_RUNNER_GRADLE_BUILD_CACHE = e.gradleBuildCache;
   if (e.bazelRemoteCache) env.CI_RUNNER_BAZEL_REMOTE_CACHE = e.bazelRemoteCache;
   if (e.remoteBuilders) env.CI_RUNNER_REMOTE_BUILDERS = e.remoteBuilders;
   // Node (installed by proto or devbox, not the system one) does not read the
