@@ -38,7 +38,7 @@ describe('config', () => {
   });
 
   it('accepts a Nix substituter that is an http(s) URL, and nothing that could add a line or a second cache', () => {
-    for (const ok of ['https://golang.cache.build.devel.truvity.private/nix', 'http://cache.example.test/nix']) {
+    for (const ok of ['https://nix.example.test/nix', 'http://cache.example.test/nix']) {
       const c: any = exampleConfig();
       c.runnerEnvironment.nixSubstituter = ok;
       expect(() => validate(c), ok).not.toThrow();
