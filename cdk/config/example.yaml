@@ -79,6 +79,9 @@ runner:
     CI_BUILDKIT_TLS_CERT_PEM: /example/ci/buildkit-client/cert
     CI_BUILDKIT_TLS_KEY_PEM: arn:partition:ssm:eu-central-1:account-id:parameter/example/ci/buildkit-client/key
   # secretKmsKeyArn: arn:partition:kms:eu-central-1:account-id:key/example-key
+  # A registered runner that takes no job is stopped and removed after this many
+  # minutes (measured from registration). Default: 5.
+  idleTimeoutMinutes: 2
 
 costCap:
   maxConcurrentTasks: 20
@@ -124,6 +127,14 @@ orgs:
           Action: [s3:GetObject, s3:PutObject, s3:ListBucket]
           Resource: ["arn:partition:s3:::example-ci-cache", "arn:partition:s3:::example-ci-cache/*"]
     warm: true
+    # The webhook allow-list: a runner is started only for jobs of these repositories.
+    # An organisation without `allow` (widgets below) is unrestricted; when any
+    # organisation has one, jobs of a login that is not in this file are refused.
+    allow:
+      - repository: acme/app
+      - repository: acme/release
+        workflows: [release]          # exact workflow names
+        refs: ["v*", "release/*"]     # globs over the tag or branch; * matches / too
   - name: widgets
     sluisParameter: /example/path/widgets-grun
     webhook:

@@ -120,6 +120,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `buildkit.tlsDir` | `/etc/ci-buildkit-tls` | `CI_BUILDKIT_TLS_DIR`; holds `ca.pem`, `cert.pem`, `key.pem` |
 | `buildkit.tlsServerName` | | `CI_BUILDKIT_TLS_SERVERNAME` |
 | `runner.secretEnv` | | `{ENV_NAME: SSM parameter name or ARN}`: ECS injects each as that environment variable when a task starts (see below) |
+| `runner.idleTimeoutMinutes` | 5 (the library's) | minutes a registered runner may stay idle before the idle reaper stops it and removes it from GitHub (see "Runner hygiene") |
 | `runner.secretKmsKeyArn` | | key that encrypts those parameters; the execution role gets `kms:Decrypt` on it. Omit for the AWS-managed SSM key |
 | `costTags.componentKey`, `componentValue` | `component`, `ci` | the stack tag `<componentKey>=<componentValue>`; the daily budget filters on it |
 | `costTags.environmentKey` | `environment` | the stack tag `<environmentKey>=<env>` |
@@ -143,6 +144,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].environment` | | extra variables for this organisation's tasks |
 | `orgs[].warm` | true | give this organisation the warm pools |
 | `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
+| `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
 
 Default shapes: `fg-large` 4 vCPU / 24 GB / 100 GiB, `fg-medium` 2 / 14 / 50,
 `fg-small` 1 / 6 / 50. Fargate takes only certain CPU and memory pairs; an
@@ -169,6 +171,54 @@ organisation permission "Self-hosted runners: read and write" it already needs
 for registration. A job from a repository the group does not admit never gets
 the runner, which then waits and is torn down at its timeout; to avoid the
 waste, install the App on the same repositories (a selected installation).
+
+### Runner hygiene
+
+Two settings narrow what a runner of this stack can be used for. `orgs[].allow`
+decides which jobs start a runner at all: for a tier that admits only reviewed
+workflows (a release tier) it is the fence, enforced before any capacity is
+spent. `runner.idleTimeoutMinutes` shrinks the window in which a runner that
+nobody picked up can be handed a job it was not started for.
+
+**`runner.idleTimeoutMinutes`** is cdk-github-runners' `idleTimeout`. Every
+runner start queues a check for the idle reaper; the reaper looks at the runner
+on GitHub and, when it is registered, **not busy** and has been registered for
+longer than the timeout (it measures from the `cdkghr:started` label, that is
+from registration, not from the start of the task), stops the runner's Step
+Functions execution and deletes the runner from GitHub, after which the task
+powers itself off. It does **not** stop a runner that is busy (a long job is
+never cut), a runner that has not registered yet (it is checked again later),
+or a warm runner (those carry their pool's duration as their own limit; a job
+that reaches a warm runner is unaffected). The point: a runner started for a
+job that GitHub then cancelled or gave to another runner is registered and
+idle, and until the reaper removes it any later job that matches its labels
+can land on it. The default is five minutes; two minutes is enough for a task
+that registers within a minute. The value reaches the webhook Lambda
+(`IDLE_TIMEOUT_SECONDS`) and the Step Functions default. Too small a value
+removes a runner that is still waiting for GitHub to hand it its job, so the
+job queues again, so keep it above the registration time of the slowest shape.
+
+**`orgs[].allow`** is the webhook allow-list, checked by the provider selector
+before it routes the job or looks at capacity. A job whose repository is not
+listed (compared without case) starts nothing: the selector returns no
+provider and logs one CloudWatch embedded metric, `Grun` / `AllowRefused`
+(dimension `Stack`; `organization`, `repository`, `workflow` and `ref` are
+plain properties for Logs Insights, not dimensions). There is no alarm on it on
+purpose: a refused job is the list doing its job, and a typo in the list shows
+as a job that waits, which the metric explains. When an entry has
+`workflows`, the job's `workflow_job.workflow_name` must equal one of them
+exactly (case-sensitive). When it has `refs`, the job's `workflow_job.head_branch`
+(the tag name for a tag push) must match one glob, in which `*` matches any
+characters including `/` and nothing else is special. An organisation without
+`allow` is unrestricted. All organisations of a stack share one selector, so
+the lists travel as one JSON variable keyed by organisation login
+(`ALLOW_LIST`; an organisation without a list is `null` in it); as soon as any
+organisation has a list, a job from a login that is not in the file at all is
+refused (fail closed). `head_branch` is only a hint, because a branch can be
+named like a tag; the repository check is the hard part and `workflows` and
+`refs` narrow it. The list does not govern warm runners: they bypass the
+selector and register at organisation level, so the runner group's repository
+access is what limits them.
 
 ## Design notes
 

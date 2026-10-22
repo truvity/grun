@@ -236,6 +236,11 @@
           "additionalProperties": { "type": "string", "pattern": "^(/?[A-Za-z0-9_.\\-/]+|arn:[^:]+:ssm:[^:]*:[^:]*:parameter/.+)$" },
           "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]*$" }
         },
+        "idleTimeoutMinutes": {
+          "description": "Minutes a runner may stay registered and idle (no job taken) before the idle reaper stops it and removes it from GitHub; measured from its registration. A runner started for a job that GitHub then cancelled or gave to another runner disappears after this time instead of waiting to serve a later job. Busy runners and the warm runners (their pool's duration governs them) are not affected. Absent: the library's default of 5.",
+          "type": "integer",
+          "minimum": 1
+        },
         "secretKmsKeyArn": {
           "description": "ARN of the customer-managed KMS key that encrypts the secretEnv parameters. The execution role gets kms:Decrypt on it. Omit for the AWS-managed SSM key.",
           "type": "string",
@@ -346,6 +351,33 @@
           },
           "environment": { "description": "Extra environment for this organisation's tasks.", "type": "object", "additionalProperties": { "type": "string" } },
           "warm": { "description": "Apply the top-level warm pools to this organisation.", "type": "boolean", "default": true },
+          "allow": {
+            "description": "The webhook allow-list: the provider selector starts a runner only for a job of one of these repositories, and refuses every other job of the organisation (no capacity is spent; a metric AllowRefused is logged). Absent: every job of the organisation is considered. When ANY organisation of the file has a list, the selector refuses jobs of a login that is not in the file at all. workflow and ref come from the webhook payload (workflow_job.workflow_name, workflow_job.head_branch) and only narrow an entry: the repository is the hard part.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["repository"],
+              "properties": {
+                "repository": { "description": "owner/name of a repository of this organisation; compared case-insensitively.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$" },
+                "workflows": {
+                  "description": "Names of the workflows (the `name:` of the workflow file) whose jobs may start a runner; exact, case-sensitive. Absent: any workflow.",
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "refs": {
+                  "description": "Globs the job's head_branch must match (for a tag push it is the tag name): `*` matches any characters including `/`, nothing else is special; case-sensitive. Absent: any ref. A branch can be named like a tag, so this narrows and does not authenticate.",
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
           "runnerGroup": {
             "description": "GitHub runner group the runners of this organisation register in. It must exist before the first job (a runner that cannot join its group does not start); its repository access limits which repositories the runners serve. Absent: the organisation's default group.",
             "type": "string",

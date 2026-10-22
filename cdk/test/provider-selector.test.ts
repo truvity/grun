@@ -1,7 +1,7 @@
 import { ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
 import { mockClient } from 'aws-sdk-client-mock';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SelectorConfig, SelectorInput, loadConfig, route, runningTasks, select } from '../lambda/provider-selector/handler';
+import { AllowList, SelectorConfig, SelectorInput, allowed, globMatches, loadConfig, parseAllowList, route, runningTasks, select } from '../lambda/provider-selector/handler';
 
 const providers = {
   'grun-x/acme/fg-large': ['fg-large', 'linux', 'arm64'],
@@ -88,7 +88,150 @@ describe('select', () => {
   });
 });
 
+describe('globMatches', () => {
+  it('lets * match any characters, / included, and nothing else is special', () => {
+    expect(globMatches('v*', 'v1.2.3')).toBe(true);
+    expect(globMatches('v*', 'x1')).toBe(false);
+    expect(globMatches('release/*', 'release/2026/10')).toBe(true);
+    expect(globMatches('*', '')).toBe(true);
+    expect(globMatches('*/v*', 'eudi/v1.0.0')).toBe(true);
+    expect(globMatches('v1.2', 'v1x2')).toBe(false); // the dot is a dot
+    expect(globMatches('a+b', 'aab')).toBe(false);
+    expect(globMatches('[ab]', 'a')).toBe(false);
+    expect(globMatches('main', 'main2')).toBe(false);
+    expect(globMatches('main', 'Main')).toBe(false); // case-sensitive
+  });
+});
+
+describe('the allow-list', () => {
+  const allow: AllowList = {
+    acme: [
+      { repository: 'acme/app' },
+      { repository: 'acme/release', workflows: ['release', 'publish'], refs: ['v*', 'sdk-*/v*'] },
+    ],
+    open: null,
+  };
+  const withAllow: SelectorConfig = { ...config, allow };
+  const ev = (org: string | undefined, repo: string, workflow: string | undefined, ref: string | null | undefined, labels = ['fg-large']): SelectorInput => ({
+    payload: {
+      organization: org ? { login: org } : undefined,
+      repository: { full_name: repo },
+      workflow_job: { labels, workflow_name: workflow, head_branch: ref },
+    },
+    providers,
+  });
+  const ok = (e: SelectorInput) => allowed(e.payload, allow);
+
+  it('admits a repository that is listed without narrowing, whatever its workflow and ref', () => {
+    expect(ok(ev('acme', 'acme/app', 'anything', 'any/branch'))).toBe(true);
+    expect(ok(ev('acme', 'acme/app', undefined, null))).toBe(true);
+  });
+
+  it('refuses a repository that is not listed, and compares the repository case-insensitively', () => {
+    expect(ok(ev('acme', 'acme/other', 'release', 'v1'))).toBe(false);
+    expect(ok(ev('acme', 'acme/app-fork', 'release', 'v1'))).toBe(false);
+    expect(ok(ev('acme', 'ACME/App', 'x', 'main'))).toBe(true);
+    expect(ok(ev('Acme', 'acme/app', 'x', 'main'))).toBe(true); // the login is case-insensitive too
+  });
+
+  it('checks the workflow name exactly when the entry names workflows', () => {
+    expect(ok(ev('acme', 'acme/release', 'release', 'v1'))).toBe(true);
+    expect(ok(ev('acme', 'acme/release', 'publish', 'v1'))).toBe(true);
+    expect(ok(ev('acme', 'acme/release', 'Release', 'v1'))).toBe(false);
+    expect(ok(ev('acme', 'acme/release', 'release ', 'v1'))).toBe(false);
+    expect(ok(ev('acme', 'acme/release', 'ci', 'v1'))).toBe(false);
+    expect(ok(ev('acme', 'acme/release', undefined, 'v1'))).toBe(false); // no name in the payload: refused
+  });
+
+  it('checks the ref against the globs when the entry names refs', () => {
+    expect(ok(ev('acme', 'acme/release', 'release', 'v1.2.3'))).toBe(true);
+    expect(ok(ev('acme', 'acme/release', 'release', 'sdk-go/v1.2.3'))).toBe(true);
+    expect(ok(ev('acme', 'acme/release', 'release', 'main'))).toBe(false);
+    expect(ok(ev('acme', 'acme/release', 'release', 'xv1'))).toBe(false);
+    expect(ok(ev('acme', 'acme/release', 'release', null))).toBe(false);
+  });
+
+  it('leaves an organisation marked unrestricted alone', () => {
+    expect(ok(ev('open', 'open/anything', 'x', 'y'))).toBe(true);
+  });
+
+  it('refuses an organisation the file does not know, or a payload without one, once any list exists', () => {
+    expect(ok(ev('stranger', 'stranger/app', 'x', 'main'))).toBe(false);
+    expect(ok(ev(undefined, 'acme/app', 'x', 'main'))).toBe(false);
+  });
+
+  it('considers every job when there is no list', () => {
+    expect(allowed(ev('stranger', 'stranger/app', 'x', 'main').payload, undefined)).toBe(true);
+    expect(allowed(ev('stranger', 'stranger/app', 'x', 'main').payload, {})).toBe(true);
+  });
+
+  it('starts an allowed job as before', async () => {
+    ecs.on(ListTasksCommand).resolves(tasks(0));
+    expect((await select(ev('acme', 'acme/app', 'ci', 'main'), withAllow)).provider).toBe('grun-x/acme/fg-large');
+    expect(logged.some((l) => l.includes('AllowRefused'))).toBe(false);
+  });
+
+  it('does not change routing: an allowed job that fits no provider still starts nothing', async () => {
+    expect(await select(ev('acme', 'acme/app', 'ci', 'main', ['gpu']), withAllow)).toEqual({});
+    expect(logged.some((l) => l.includes('AllowRefused'))).toBe(false);
+  });
+
+  it('refuses a job that is not allowed with one AllowRefused metric, and never asks ECS about it', async () => {
+    expect(await select(ev('acme', 'acme/evil', 'release', 'v1'), withAllow)).toEqual({});
+    expect(ecs.commandCalls(ListTasksCommand)).toHaveLength(0);
+    const lines = logged.filter((l) => l.includes('AllowRefused'));
+    expect(lines).toHaveLength(1);
+    const line = JSON.parse(lines[0]);
+    expect(line._aws.CloudWatchMetrics[0]).toEqual({ Namespace: 'Grun', Dimensions: [['Stack']], Metrics: [{ Name: 'AllowRefused', Unit: 'Count' }] });
+    expect(line).toMatchObject({ Stack: 'grun-x', AllowRefused: 1, repository: 'acme/evil', workflow: 'release', ref: 'v1' });
+    expect(logged.some((l) => l.includes('CapRefused'))).toBe(false);
+  });
+
+  it('refuses before the cap, even where the cluster is full or the cap defers', async () => {
+    ecs.on(ListTasksCommand).resolves(tasks(9));
+    await expect(select(ev('acme', 'acme/release', 'release', 'main'), { ...withAllow, onExceed: 'defer' })).resolves.toEqual({});
+    expect(ecs.commandCalls(ListTasksCommand)).toHaveLength(0);
+  });
+
+  it('refuses the job of an unknown organisation (fail closed) and records it', async () => {
+    expect(await select(ev('stranger', 'stranger/app', 'ci', 'main'), withAllow)).toEqual({});
+    expect(JSON.parse(logged.find((l) => l.includes('AllowRefused'))!)).toMatchObject({ organization: 'stranger', repository: 'stranger/app' });
+  });
+});
+
+describe('parseAllowList', () => {
+  it('reads a map keyed by organisation, lowercasing the key', () => {
+    expect(parseAllowList('{"Acme":[{"repository":"acme/app","refs":["v*"]}],"open":null}')).toEqual({
+      acme: [{ repository: 'acme/app', refs: ['v*'] }],
+      open: null,
+    });
+  });
+
+  it.each([
+    ['not json', '{'],
+    ['an array', '[]'],
+    ['a string', '"x"'],
+    ['an empty list', '{"acme":[]}'],
+    ['a non-list', '{"acme":{"repository":"acme/app"}}'],
+    ['an entry without a repository', '{"acme":[{"refs":["v*"]}]}'],
+    ['a repository without an owner', '{"acme":[{"repository":"app"}]}'],
+    ['an unknown key', '{"acme":[{"repository":"acme/app","branch":"main"}]}'],
+    ['empty workflows', '{"acme":[{"repository":"acme/app","workflows":[]}]}'],
+    ['a non-string ref', '{"acme":[{"repository":"acme/app","refs":[1]}]}'],
+    ['the same organisation twice', '{"acme":null,"ACME":null}'],
+  ])('throws on %s', (_n, text) => {
+    expect(() => parseAllowList(text)).toThrow(/ALLOW_LIST/);
+  });
+});
+
 describe('loadConfig', () => {
+  it('reads ALLOW_LIST and throws on a malformed one', () => {
+    const base = { CLUSTER_ARN: 'c', MAX_CONCURRENT_TASKS: '1', ON_EXCEED: 'skip', SHAPE_LABELS: 'a', STACK_NAME: 's' };
+    expect(loadConfig({ ...base, ALLOW_LIST: '{"acme":[{"repository":"acme/app"}]}' }).allow).toEqual({ acme: [{ repository: 'acme/app' }] });
+    expect(loadConfig(base)).not.toHaveProperty('allow');
+    expect(() => loadConfig({ ...base, ALLOW_LIST: '{"acme":' })).toThrow('ALLOW_LIST');
+  });
+
   it('reads the environment', () => {
     expect(
       loadConfig({ CLUSTER_ARN: 'c', MAX_CONCURRENT_TASKS: '20', ON_EXCEED: 'defer', SHAPE_LABELS: 'a,b', STACK_NAME: 's' }),
