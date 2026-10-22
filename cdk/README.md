@@ -101,7 +101,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerImage.rebuildIntervalDays` | 7 | scheduled rebuild (0 disables); keep it well under GitHub's 30-day limit on old runners |
 | `runnerImage.computeType` | `BUILD_GENERAL1_LARGE` | CodeBuild size of the image build |
 | `runnerImage.cloudWatchAgent` | true | install the CloudWatch agent |
-| `runnerImage.extraCertificates.path` / `.pem` | | private CA to trust: a file (relative to the configuration file) or the PEM itself |
+| `runnerImage.extraCertificates.path` / `.pem` | | private CA to trust: a file (relative to the configuration file) or the PEM itself. Also sets `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt` on every task, since Node does not read the system store |
 | `runnerImage.extraCertificates.name` | `private-ca` | |
 | `shapes[]` | the three below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (21 to 200) |
 | `requireSelfHostedLabel` | false | false lets a job say `runs-on: fg-large` alone |

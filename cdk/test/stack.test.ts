@@ -217,6 +217,14 @@ describe('providers', () => {
     });
   });
 
+  it('points NODE_EXTRA_CA_CERTS at the system bundle that holds the private CA', () => {
+    expect(env(s.json, 'acmefglarge').NODE_EXTRA_CA_CERTS).toBe('/etc/ssl/certs/ca-certificates.crt');
+    const t = synth((c) => {
+      c.runnerImage.extraCertificates = undefined;
+    });
+    expect(env(t.json, 'acmefglarge').NODE_EXTRA_CA_CERTS).toBeUndefined();
+  });
+
   it('adds an organisation\'s own environment to its tasks only', () => {
     expect(env(s.json, 'widgetsfgsmall').EXAMPLE_FLAG).toBe('1');
     expect(env(s.json, 'acmefgsmall').EXAMPLE_FLAG).toBeUndefined();

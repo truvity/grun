@@ -225,6 +225,13 @@ export function crossChecks(config: GrunConfig): string[] {
   return problems;
 }
 
+/**
+ * The system bundle that `update-ca-certificates` rebuilds on the image when
+ * the private CA is installed (Ubuntu). Node ignores the system store, so the
+ * tasks point NODE_EXTRA_CA_CERTS here; Node adds it to its built-in roots.
+ */
+export const SYSTEM_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt';
+
 /** The variables the typed runnerEnvironment and buildkit settings produce. */
 function runnerEnvNames(config: GrunConfig): Record<string, true> {
   const e = config.runnerEnvironment ?? {};
@@ -236,6 +243,7 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (e.remoteBuilders) names.CI_RUNNER_REMOTE_BUILDERS = true;
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
+  if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;
   return names;
 }
 

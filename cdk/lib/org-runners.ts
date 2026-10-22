@@ -23,7 +23,7 @@ import {
 } from '@cloudsnorkel/cdk-github-runners';
 import { Construct } from 'constructs';
 import { CustomDomainApiAccess } from './access';
-import { GrunConfig, OrgConfig, Shape, costTags, stackName, taskRoleName } from './config';
+import { GrunConfig, OrgConfig, SYSTEM_CA_BUNDLE, Shape, costTags, stackName, taskRoleName } from './config';
 import { retention } from './runner-image';
 
 export interface OrgRunnersProps {
@@ -50,6 +50,9 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   if (e.npmRegistry) env.CI_RUNNER_NPM_REGISTRY = e.npmRegistry;
   if (e.bazelRemoteCache) env.CI_RUNNER_BAZEL_REMOTE_CACHE = e.bazelRemoteCache;
   if (e.remoteBuilders) env.CI_RUNNER_REMOTE_BUILDERS = e.remoteBuilders;
+  // Node (installed by proto or devbox, not the system one) does not read the
+  // system store that holds the private CA; the ARC runners exported this too.
+  if (config.runnerImage.extraCertificates) env.NODE_EXTRA_CA_CERTS = SYSTEM_CA_BUNDLE;
   const bk = config.buildkit;
   if (bk?.clientCertSecret) env.CI_BUILDKIT_TLS_DIR = bk.tlsDir ?? '/etc/ci-buildkit-tls';
   if (bk?.tlsServerName) env.CI_BUILDKIT_TLS_SERVERNAME = bk.tlsServerName;
