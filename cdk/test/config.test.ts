@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { crossChecks, validate } from '../lib/config';
+import { allowList, crossChecks, validate } from '../lib/config';
 import { exampleConfig } from './helpers';
 
 describe('config', () => {
@@ -87,6 +87,65 @@ describe('config', () => {
     e.runnerEnvironment.goCacheRegion = 'eu-central-1';
     delete e.runnerEnvironment.goCacheBucket;
     expect(() => validate(e)).toThrow(/goCacheRegion/);
+  });
+
+  it('accepts runner.idleTimeoutMinutes as an integer of at least 1', () => {
+    for (const ok of [1, 2, 5, 30]) {
+      const c: any = exampleConfig();
+      c.runner.idleTimeoutMinutes = ok;
+      expect(() => validate(c), String(ok)).not.toThrow();
+    }
+    for (const bad of [0, -1, 1.5, '2', null]) {
+      const c: any = exampleConfig();
+      c.runner.idleTimeoutMinutes = bad;
+      expect(() => validate(c), JSON.stringify(bad)).toThrow(/idleTimeoutMinutes/);
+    }
+  });
+
+  describe('orgs[].allow', () => {
+    const withAllow = (allow: unknown) => {
+      const c: any = exampleConfig();
+      c.orgs[0].allow = allow;
+      return c;
+    };
+
+    it('accepts repositories with and without workflows and refs', () => {
+      expect(() => validate(withAllow([{ repository: 'acme/app' }]))).not.toThrow();
+      expect(() => validate(withAllow([{ repository: 'acme/app', workflows: ['release'], refs: ['v*', 'sdk-*/v*'] }]))).not.toThrow();
+    });
+
+    it('refuses an empty list, an entry without a repository, unknown keys and empty narrowing lists', () => {
+      for (const bad of [
+        [],
+        [{}],
+        [{ workflows: ['release'] }],
+        [{ repository: 'acme/app', branch: 'main' }],
+        [{ repository: 'acme/app', workflows: [] }],
+        [{ repository: 'acme/app', refs: [] }],
+        [{ repository: 'acme/app', refs: [''] }],
+        [{ repository: 'acme/app', workflows: ['a', 'a'] }],
+        [{ repository: 'acme' }],
+        [{ repository: 'acme/app extra' }],
+        'acme/app',
+      ]) {
+        expect(() => validate(withAllow(bad)), JSON.stringify(bad)).toThrow(/allow/);
+      }
+    });
+
+    it('refuses a repository of another owner than the organisation', () => {
+      expect(() => validate(withAllow([{ repository: 'other/app' }]))).toThrow(/not a repository of acme/);
+      expect(() => validate(withAllow([{ repository: 'ACME/app' }]))).not.toThrow();
+    });
+
+    it('builds the selector map: lowercase keys, null for an organisation without a list, nothing without any list', () => {
+      const c: any = exampleConfig();
+      expect(allowList(c)).toEqual({
+        acme: c.orgs[0].allow,
+        widgets: null,
+      });
+      for (const o of c.orgs) delete o.allow;
+      expect(allowList(c)).toBeUndefined();
+    });
   });
 
   it('rejects a missing required section', () => {

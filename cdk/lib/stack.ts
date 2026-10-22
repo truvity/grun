@@ -25,7 +25,7 @@ import {
   aws_sns_subscriptions as subs,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, costTags, qualifier, stackName } from './config';
+import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, allowList, costTags, qualifier, stackName } from './config';
 import { applyIdentityRules } from './iam';
 import { OrgRunners } from './org-runners';
 import { RunnerImage, retention } from './runner-image';
@@ -113,8 +113,9 @@ export class GrunStack extends Stack {
     // ---- provider selector: routing and the task cap
     const cap = config.costCap ?? {};
     const maxTasks = cap.maxConcurrentTasks ?? 20;
+    const allow = allowList(config);
     const selector = new nodejs.NodejsFunction(this, 'ProviderSelector', {
-      description: 'Routes a job to the runner shape its label asks for and refuses it when the task cap is reached',
+      description: 'Routes a job to the runner shape its label asks for and refuses it when the task cap is reached or the organisation does not allow it',
       entry: path.join(LAMBDA_ROOT, 'provider-selector', 'handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -127,6 +128,7 @@ export class GrunStack extends Stack {
         ON_EXCEED: cap.onExceed ?? 'skip',
         SHAPE_LABELS: [...shapes].sort((a, b) => a.vcpu - b.vcpu || a.memoryGiB - b.memoryGiB).map((s) => s.label).join(','),
         STACK_NAME: name,
+        ...(allow ? { ALLOW_LIST: JSON.stringify(allow) } : {}),
       },
       logGroup: new logs.LogGroup(this, 'ProviderSelectorLogs', {
         retention: retention(config.logRetentionDays ?? 30),

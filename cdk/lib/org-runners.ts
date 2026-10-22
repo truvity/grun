@@ -138,6 +138,7 @@ export class OrgRunners extends Construct {
       providers: Object.values(this.providers),
       requireSelfHostedLabel: config.requireSelfHostedLabel ?? false,
       providerSelector: props.providerSelector,
+      idleTimeout: config.runner?.idleTimeoutMinutes !== undefined ? Duration.minutes(config.runner.idleTimeoutMinutes) : undefined,
       logOptions: { logRetention },
       webhookAccess: new CustomDomainApiAccess({
         domainName: org.webhook.domainName,

@@ -408,6 +408,28 @@ describe('webhook', () => {
   });
 });
 
+describe('idle timeout', () => {
+  const webhooks = (json: any) =>
+    resources(json, 'AWS::Lambda::Function').filter(([, f]) => f.Properties.Environment?.Variables?.PROVIDER_SELECTOR_ARN);
+  const machines = (json: any) => resources(json, 'AWS::StepFunctions::StateMachine').map(([, m]) => definition(m));
+
+  it('reaches the webhook of every organisation and the state machine default', () => {
+    const t = synth();
+    const w = webhooks(t.json);
+    expect(w).toHaveLength(2);
+    for (const [, f] of w) expect(f.Properties.Environment.Variables.IDLE_TIMEOUT_SECONDS).toBe('120');
+    expect(machines(t.json).some((d) => d.includes('$states.input.maxIdleSeconds : 120'))).toBe(true);
+  });
+
+  it('is the library default of five minutes when the file does not say', () => {
+    const t = synth((c) => {
+      c.runner!.idleTimeoutMinutes = undefined;
+    });
+    for (const [, f] of webhooks(t.json)) expect(f.Properties.Environment.Variables.IDLE_TIMEOUT_SECONDS).toBe('300');
+    expect(machines(t.json).some((d) => d.includes('$states.input.maxIdleSeconds : 300'))).toBe(true);
+  });
+});
+
 describe('selector, cap and budget', () => {
   const fn = (desc: RegExp) =>
     resources(s.json, 'AWS::Lambda::Function').find(([, f]) => desc.test(f.Properties.Description ?? ''))![1].Properties;
@@ -418,6 +440,23 @@ describe('selector, cap and budget', () => {
     expect(env.ON_EXCEED).toBe('skip');
     expect(env.SHAPE_LABELS).toBe('fg-small,fg-medium,fg-large');
     expect(text(env.CLUSTER_ARN)).toContain('Cluster');
+  });
+
+  it('hands the selector the allow-lists as one JSON variable keyed by organisation', () => {
+    const env = fn(/Routes a job/).Environment.Variables;
+    expect(JSON.parse(env.ALLOW_LIST)).toEqual({
+      acme: s.config.orgs[0].allow,
+      widgets: null,
+    });
+    expect(JSON.parse(env.ALLOW_LIST).acme).toContainEqual({ repository: 'acme/release', workflows: ['release'], refs: ['v*', 'release/*'] });
+  });
+
+  it('sets no ALLOW_LIST when no organisation has a list', () => {
+    const t = synth((c) => {
+      for (const o of c.orgs) o.allow = undefined;
+    });
+    const f = resources(t.json, 'AWS::Lambda::Function').find(([, x]) => /Routes a job/.test(x.Properties.Description ?? ''))![1];
+    expect(f.Properties.Environment.Variables).not.toHaveProperty('ALLOW_LIST');
   });
 
   it('gives the selector list access to its cluster only', () => {

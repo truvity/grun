@@ -19,6 +19,16 @@ export interface Shape {
   ephemeralStorageGiB?: number;
 }
 
+/** One repository the organisation's runners may be started for. */
+export interface AllowEntry {
+  /** owner/name; the owner is the organisation. Compared case-insensitively. */
+  repository: string;
+  /** Workflow names (exact, case-sensitive). Absent: any workflow of the repository. */
+  workflows?: string[];
+  /** Globs over the job's head_branch, `*` matching any characters including `/`. Absent: any ref. */
+  refs?: string[];
+}
+
 export interface OrgConfig {
   name: string;
   sluisParameter: string;
@@ -33,6 +43,12 @@ export interface OrgConfig {
    * the organisation's default group.
    */
   runnerGroup?: string;
+  /**
+   * The webhook allow-list: runners are started only for jobs of these
+   * repositories (narrowed by workflow and ref when an entry names them).
+   * Absent: every job of the organisation is considered.
+   */
+  allow?: AllowEntry[];
 }
 
 export interface GrunConfig {
@@ -87,6 +103,8 @@ export interface GrunConfig {
     secretEnv?: Record<string, string>;
     /** KMS key (ARN) that encrypts those parameters, when it is not the AWS-managed one. */
     secretKmsKeyArn?: string;
+    /** Minutes a registered runner may stay idle before it is stopped and removed. Default: the library's 5. */
+    idleTimeoutMinutes?: number;
   };
   costCap?: { maxConcurrentTasks?: number; onExceed?: 'skip' | 'defer'; dailyBudgetUsd?: number };
   alerts: { emails: string[] };
@@ -209,6 +227,15 @@ export function crossChecks(config: GrunConfig): string[] {
       problems.push(`orgs.${org.name}.webhook.domainName: must be a lowercase DNS name`);
     }
   }
+  // An allow-list names repositories of its own organisation: a repository of another owner
+  // can never match a job of this one, so it is a typo.
+  for (const org of config.orgs) {
+    for (const e of org.allow ?? []) {
+      if (e.repository.split('/')[0].toLowerCase() !== org.name.toLowerCase()) {
+        problems.push(`orgs.${org.name}.allow: ${e.repository} is not a repository of ${org.name}`);
+      }
+    }
+  }
   // A region without a bucket would name nothing; the shared actions read the pair together.
   if (config.runnerEnvironment?.goCacheRegion && !config.runnerEnvironment.goCacheBucket) {
     problems.push('runnerEnvironment.goCacheRegion: set only with runnerEnvironment.goCacheBucket');
@@ -282,6 +309,17 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
   if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;
   return names;
+}
+
+/**
+ * The ALLOW_LIST of the provider selector, or undefined when no organisation
+ * has an allow-list. Keyed by the lowercase organisation; an organisation
+ * without a list is null (known, unrestricted), because the selector refuses a
+ * login it does not know as soon as any organisation is restricted.
+ */
+export function allowList(config: GrunConfig): Record<string, AllowEntry[] | null> | undefined {
+  if (!config.orgs.some((o) => o.allow)) return undefined;
+  return Object.fromEntries(config.orgs.map((o) => [o.name.toLowerCase(), o.allow ?? null]));
 }
 
 export function taskRoleName(config: GrunConfig, org: string, shapeLabel: string): string {
