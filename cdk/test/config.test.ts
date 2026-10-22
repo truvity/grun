@@ -37,6 +37,19 @@ describe('config', () => {
     expect(() => validate(c)).toThrow(/runnerGroup/);
   });
 
+  it('accepts a Nix substituter that is an http(s) URL, and nothing that could add a line or a second cache', () => {
+    for (const ok of ['https://golang.cache.build.devel.truvity.private/nix', 'http://cache.example.test/nix']) {
+      const c: any = exampleConfig();
+      c.runnerEnvironment.nixSubstituter = ok;
+      expect(() => validate(c), ok).not.toThrow();
+    }
+    for (const bad of ['', 'cache.example.test/nix', 's3://bucket', 'https://a.test/nix https://b.test', 'https://a.test/nix\nsandbox = false']) {
+      const c: any = exampleConfig();
+      c.runnerEnvironment.nixSubstituter = bad;
+      expect(() => validate(c), JSON.stringify(bad)).toThrow(/nixSubstituter/);
+    }
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;

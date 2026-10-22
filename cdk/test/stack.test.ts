@@ -217,6 +217,16 @@ describe('providers', () => {
     });
   });
 
+  it('puts the Nix pull-through cache first and the upstream behind it, through NIX_CONFIG', () => {
+    expect(env(s.json, 'acmefglarge').NIX_CONFIG).toBe(
+      'substituters = https://nix.example.test/nix https://cache.nixos.org/\nconnect-timeout = 5\n',
+    );
+    const t = synth((c) => {
+      c.runnerEnvironment = { goproxy: 'https://goproxy.example.test' };
+    });
+    expect(env(t.json, 'acmefglarge').NIX_CONFIG).toBeUndefined();
+  });
+
   it('points NODE_EXTRA_CA_CERTS at the system bundle that holds the private CA', () => {
     expect(env(s.json, 'acmefglarge').NODE_EXTRA_CA_CERTS).toBe('/etc/ssl/certs/ca-certificates.crt');
     const t = synth((c) => {
