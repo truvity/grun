@@ -151,7 +151,7 @@
         "goproxy": { "description": "CI_RUNNER_GOPROXY", "type": "string" },
         "npmRegistry": { "description": "CI_RUNNER_NPM_REGISTRY", "type": "string" },
         "nixSubstituter": {
-          "description": "The Nix pull-through cache, an http(s) URL without spaces (for example https://golang.cache.build.devel.truvity.private/nix). The tasks get NIX_CONFIG with `substituters = <this> https://cache.nixos.org/`, so the upstream stays the fallback.",
+          "description": "The Nix pull-through cache, an http(s) URL without spaces (for example https://nix.example.test/nix). The tasks get NIX_CONFIG with `substituters = <this> https://cache.nixos.org/`, so the upstream stays the fallback.",
           "type": "string",
           "pattern": "^https?://[^\\s]+$"
         },
