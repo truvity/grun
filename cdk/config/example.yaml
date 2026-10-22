@@ -50,6 +50,9 @@ runnerEnvironment:      # read by the shared CI workflows
   gradleBuildCache: https://gradle.example.test
   bazelRemoteCache: grpcs://bazel.example.test:443
   remoteBuilders: tcp://builder.example.test:1234
+  goCacheBucket: example-ci-cache
+  goCacheRegion: eu-central-1
+  buildxCache: account-id.dkr.ecr.eu-central-1.amazonaws.com/ci/buildkit-cache
   extra: {}
 
 buildkit:

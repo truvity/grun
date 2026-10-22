@@ -58,6 +58,11 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   if (e.gradleBuildCache) env.CI_RUNNER_GRADLE_BUILD_CACHE = e.gradleBuildCache;
   if (e.bazelRemoteCache) env.CI_RUNNER_BAZEL_REMOTE_CACHE = e.bazelRemoteCache;
   if (e.remoteBuilders) env.CI_RUNNER_REMOTE_BUILDERS = e.remoteBuilders;
+  // The runner's own caches: the shared actions prefer these over the caller's organisation
+  // variables, so each tier reads and writes only its own bucket and registry cache.
+  if (e.goCacheBucket) env.CI_RUNNER_GOCACHE_S3_BUCKET = e.goCacheBucket;
+  if (e.goCacheRegion) env.CI_RUNNER_GOCACHE_S3_REGION = e.goCacheRegion;
+  if (e.buildxCache) env.CI_RUNNER_BUILDX_CACHE = e.buildxCache;
   // Node (installed by proto or devbox, not the system one) does not read the
   // system store that holds the private CA; the ARC runners exported this too.
   if (config.runnerImage.extraCertificates) env.NODE_EXTRA_CA_CERTS = SYSTEM_CA_BUNDLE;

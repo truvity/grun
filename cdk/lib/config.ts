@@ -69,6 +69,9 @@ export interface GrunConfig {
     gradleBuildCache?: string;
     bazelRemoteCache?: string;
     remoteBuilders?: string;
+    goCacheBucket?: string;
+    goCacheRegion?: string;
+    buildxCache?: string;
     extra?: Record<string, string>;
   };
   buildkit?: {
@@ -206,6 +209,10 @@ export function crossChecks(config: GrunConfig): string[] {
       problems.push(`orgs.${org.name}.webhook.domainName: must be a lowercase DNS name`);
     }
   }
+  // A region without a bucket would name nothing; the shared actions read the pair together.
+  if (config.runnerEnvironment?.goCacheRegion && !config.runnerEnvironment.goCacheBucket) {
+    problems.push('runnerEnvironment.goCacheRegion: set only with runnerEnvironment.goCacheBucket');
+  }
   // A variable is either injected from SSM or set in plain text, not both.
   const secretNames = Object.keys(config.runner?.secretEnv ?? {});
   const plain = (org: OrgConfig) => [
@@ -268,6 +275,9 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (e.gradleBuildCache) names.CI_RUNNER_GRADLE_BUILD_CACHE = true;
   if (e.bazelRemoteCache) names.CI_RUNNER_BAZEL_REMOTE_CACHE = true;
   if (e.remoteBuilders) names.CI_RUNNER_REMOTE_BUILDERS = true;
+  if (e.goCacheBucket) names.CI_RUNNER_GOCACHE_S3_BUCKET = true;
+  if (e.goCacheRegion) names.CI_RUNNER_GOCACHE_S3_REGION = true;
+  if (e.buildxCache) names.CI_RUNNER_BUILDX_CACHE = true;
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
   if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;
