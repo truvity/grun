@@ -53,7 +53,6 @@ runnerEnvironment:      # read by the shared CI workflows
   goCacheBucket: example-ci-cache
   goCacheRegion: eu-central-1
   buildxCache: account-id.dkr.ecr.eu-central-1.amazonaws.com/ci/buildkit-cache
-  cacheWrites: release-credentials   # the task identity reads the caches; writes need the job's own role
   extra: {}
 
 buildkit:
