@@ -161,7 +161,7 @@
           "pattern": "^https?://[^\\s]+$"
         },
         "gradleBuildCache": {
-          "description": "CI_RUNNER_GRADLE_BUILD_CACHE: the URL of Gradle's remote build cache (the HTTP protocol), an http(s) URL without spaces, ending where the key begins (a name of its own with no path of its own, for example https://gradle.example.test; ci-plane's cache-redirect serves it under /gradle/cache, which the gateway maps from the name's root). The cache is WRITABLE by the jobs: set it on the preview tier only, never on a tier that must read no cache a job can write.",
+          "description": "CI_RUNNER_GRADLE_BUILD_CACHE: the URL of Gradle's remote build cache (the HTTP protocol), an http(s) URL without spaces, ending where the key begins (a name of its own with no path of its own, for example https://gradle.example.test; ci-plane's cache-redirect serves it at the root of its build cache front-end). The cache is WRITABLE by the jobs: name the cache of this stack's own environment, so that a tier reads only what its own jobs wrote.",
           "type": "string",
           "pattern": "^https?://[^\\s]+$"
         },
