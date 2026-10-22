@@ -229,13 +229,13 @@ describe('providers', () => {
 
   it('hands the tasks the Maven cache and the Gradle build cache, each only when named', () => {
     const e = env(s.json, 'acmefglarge');
-    expect(e.CI_RUNNER_MAVEN_REGISTRY).toBe('https://maven.example.test/maven');
-    expect(e.CI_RUNNER_GRADLE_BUILD_CACHE).toBe('https://gradle.example.test/gradle/cache');
+    expect(e.CI_RUNNER_MAVEN_REGISTRY).toBe('https://maven.example.test');
+    expect(e.CI_RUNNER_GRADLE_BUILD_CACHE).toBe('https://gradle.example.test');
     // A tier that must read no writable cache names the registry only.
     const t = synth((c) => {
       delete c.runnerEnvironment!.gradleBuildCache;
     });
-    expect(env(t.json, 'acmefglarge').CI_RUNNER_MAVEN_REGISTRY).toBe('https://maven.example.test/maven');
+    expect(env(t.json, 'acmefglarge').CI_RUNNER_MAVEN_REGISTRY).toBe('https://maven.example.test');
     expect(env(t.json, 'acmefglarge').CI_RUNNER_GRADLE_BUILD_CACHE).toBeUndefined();
     const u = synth((c) => {
       c.runnerEnvironment = { goproxy: 'https://goproxy.example.test' };
