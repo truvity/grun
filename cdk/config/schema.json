@@ -182,11 +182,6 @@
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*$"
         },
-        "cacheWrites": {
-          "description": "CI_RUNNER_CACHE_WRITES: how the caches named above are written. The only value, release-credentials, says that this tier's task identity may only READ them (the Go build cache bucket, the archive caches, the BuildKit cache); a write needs the credentials of a role the job assumed itself (for example a release role assumed by GitHub OIDC). The shared actions then restore with the task identity and save only when the job holds its own credentials. Absent: the task identity reads and writes, as before.",
-          "type": "string",
-          "enum": ["release-credentials"]
-        },
         "extra": {
           "type": "object",
           "additionalProperties": { "type": "string" },

@@ -116,7 +116,6 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerEnvironment.goCacheBucket` | | `CI_RUNNER_GOCACHE_S3_BUCKET`: the bucket of the Go build cache and the archive caches of this runner. truvity/ci-actions prefers it over the caller's organisation variable, so one organisation variable serves tiers that each have a bucket of their own. The task role must be allowed to use it |
 | `runnerEnvironment.goCacheRegion` | | `CI_RUNNER_GOCACHE_S3_REGION`; needs `goCacheBucket` |
 | `runnerEnvironment.buildxCache` | | `CI_RUNNER_BUILDX_CACHE`: the registry reference of the BuildKit cache (`<registry>/<repository>`). The shared workflows prefer it over the caller's variable |
-| `runnerEnvironment.cacheWrites` | | `release-credentials` (the only value) sets `CI_RUNNER_CACHE_WRITES`: this tier's task identity may only READ the caches above, and a write needs the credentials of a role the job assumed itself (for example a release role assumed by GitHub OIDC). The shared actions restore with the task identity and save only when the job holds its own credentials. Set it on a tier whose task role is read-only; the IAM policies, not this variable, are the fence. Absent: the task identity reads and writes |
 | `runnerEnvironment.extra` | | more variables for every task |
 | `buildkit.tlsDir` | `/etc/ci-buildkit-tls` | `CI_BUILDKIT_TLS_DIR`; holds `ca.pem`, `cert.pem`, `key.pem` |
 | `buildkit.tlsServerName` | | `CI_BUILDKIT_TLS_SERVERNAME` |
