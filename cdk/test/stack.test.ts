@@ -212,6 +212,9 @@ describe('providers', () => {
       CI_RUNNER_NPM_REGISTRY: 'https://npm.example.test',
       CI_RUNNER_BAZEL_REMOTE_CACHE: 'grpcs://bazel.example.test:443',
       CI_RUNNER_REMOTE_BUILDERS: 'tcp://builder.example.test:1234',
+      CI_RUNNER_GOCACHE_S3_BUCKET: 'example-ci-cache',
+      CI_RUNNER_GOCACHE_S3_REGION: 'eu-central-1',
+      CI_RUNNER_BUILDX_CACHE: 'account-id.dkr.ecr.eu-central-1.amazonaws.com/ci/buildkit-cache',
       CI_BUILDKIT_TLS_DIR: '/etc/ci-buildkit-tls',
       CI_BUILDKIT_TLS_SERVERNAME: 'buildkitd.example.test',
     });

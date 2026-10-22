@@ -65,6 +65,30 @@ describe('config', () => {
     }
   });
 
+  it('accepts the runner cache settings in their shapes, and refuses a space, a tag or a region without a bucket', () => {
+    const c: any = exampleConfig();
+    c.runnerEnvironment.goCacheBucket = 'example-ci-cache';
+    c.runnerEnvironment.goCacheRegion = 'eu-central-1';
+    c.runnerEnvironment.buildxCache = 'account-id.dkr.ecr.eu-central-1.amazonaws.com/ci/buildkit-cache';
+    expect(() => validate(c)).not.toThrow();
+    for (const [key, bad] of [
+      ['goCacheBucket', 'Bad_Bucket'],
+      ['goCacheBucket', 'a b'],
+      ['goCacheRegion', 'central'],
+      ['buildxCache', 'registry.example.test/ci/cache extra'],
+      ['buildxCache', 'no-slash'],
+      ['buildxCache', ''],
+    ]) {
+      const d: any = exampleConfig();
+      d.runnerEnvironment[key] = bad;
+      expect(() => validate(d), `${key}=${JSON.stringify(bad)}`).toThrow(new RegExp(key));
+    }
+    const e: any = exampleConfig();
+    e.runnerEnvironment.goCacheRegion = 'eu-central-1';
+    delete e.runnerEnvironment.goCacheBucket;
+    expect(() => validate(e)).toThrow(/goCacheRegion/);
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;

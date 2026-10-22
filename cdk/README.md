@@ -113,6 +113,9 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerEnvironment.gradleBuildCache` | | `CI_RUNNER_GRADLE_BUILD_CACHE`: the URL of Gradle's remote build cache (a name of its own with no path, such as `https://gradle.cache.example.test`: ci-plane's cache-redirect serves it at the root of its build cache front-end), registered by the same step with push on. **Writable by the jobs**: name the cache of this stack's own environment, so a tier reads only what its own jobs wrote (the preview and stable tiers each have their own cache-redirect and bucket). A build still turns the build cache on itself (`org.gradle.caching=true`) |
 | `runnerEnvironment.bazelRemoteCache` | | `CI_RUNNER_BAZEL_REMOTE_CACHE` |
 | `runnerEnvironment.remoteBuilders` | | `CI_RUNNER_REMOTE_BUILDERS` |
+| `runnerEnvironment.goCacheBucket` | | `CI_RUNNER_GOCACHE_S3_BUCKET`: the bucket of the Go build cache and the archive caches of this runner. truvity/ci-actions prefers it over the caller's organisation variable, so one organisation variable serves tiers that each have a bucket of their own. The task role must be allowed to use it |
+| `runnerEnvironment.goCacheRegion` | | `CI_RUNNER_GOCACHE_S3_REGION`; needs `goCacheBucket` |
+| `runnerEnvironment.buildxCache` | | `CI_RUNNER_BUILDX_CACHE`: the registry reference of the BuildKit cache (`<registry>/<repository>`). The shared workflows prefer it over the caller's variable |
 | `runnerEnvironment.extra` | | more variables for every task |
 | `buildkit.tlsDir` | `/etc/ci-buildkit-tls` | `CI_BUILDKIT_TLS_DIR`; holds `ca.pem`, `cert.pem`, `key.pem` |
 | `buildkit.tlsServerName` | | `CI_BUILDKIT_TLS_SERVERNAME` |

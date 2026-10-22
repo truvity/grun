@@ -167,6 +167,21 @@
         },
         "bazelRemoteCache": { "description": "CI_RUNNER_BAZEL_REMOTE_CACHE", "type": "string" },
         "remoteBuilders": { "description": "CI_RUNNER_REMOTE_BUILDERS", "type": "string" },
+        "goCacheBucket": {
+          "description": "CI_RUNNER_GOCACHE_S3_BUCKET: the S3 bucket of this runner's Go build cache and archive caches. The shared actions prefer it over the caller's organisation variable, so a tier uses its own bucket whatever the caller passes.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+        },
+        "goCacheRegion": {
+          "description": "CI_RUNNER_GOCACHE_S3_REGION: the region of goCacheBucket. Needs goCacheBucket.",
+          "type": "string",
+          "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$"
+        },
+        "buildxCache": {
+          "description": "CI_RUNNER_BUILDX_CACHE: the registry reference of the BuildKit cache (<registry>/<repository>, no tag), preferred by the shared workflows over the caller's organisation variable.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*$"
+        },
         "extra": {
           "type": "object",
           "additionalProperties": { "type": "string" },
