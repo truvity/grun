@@ -65,6 +65,8 @@ export interface GrunConfig {
     goproxy?: string;
     npmRegistry?: string;
     nixSubstituter?: string;
+    mavenRegistry?: string;
+    gradleBuildCache?: string;
     bazelRemoteCache?: string;
     remoteBuilders?: string;
     extra?: Record<string, string>;
@@ -262,6 +264,8 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (e.goproxy) names.CI_RUNNER_GOPROXY = true;
   if (e.npmRegistry) names.CI_RUNNER_NPM_REGISTRY = true;
   if (e.nixSubstituter) names.NIX_CONFIG = true;
+  if (e.mavenRegistry) names.CI_RUNNER_MAVEN_REGISTRY = true;
+  if (e.gradleBuildCache) names.CI_RUNNER_GRADLE_BUILD_CACHE = true;
   if (e.bazelRemoteCache) names.CI_RUNNER_BAZEL_REMOTE_CACHE = true;
   if (e.remoteBuilders) names.CI_RUNNER_REMOTE_BUILDERS = true;
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;

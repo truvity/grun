@@ -50,6 +50,21 @@ describe('config', () => {
     }
   });
 
+  it('accepts a Maven registry and a Gradle build cache that are http(s) URLs, and nothing that could carry a second value', () => {
+    for (const key of ['mavenRegistry', 'gradleBuildCache']) {
+      for (const ok of ['https://golang.cache.build.devel.truvity.private/maven', 'http://cache.example.test/gradle/cache']) {
+        const c: any = exampleConfig();
+        c.runnerEnvironment[key] = ok;
+        expect(() => validate(c), `${key} ${ok}`).not.toThrow();
+      }
+      for (const bad of ['', 'cache.example.test/maven', 's3://bucket', 'https://a.test/x https://b.test', 'https://a.test/x\nCI_RUNNER_GOPROXY=evil']) {
+        const c: any = exampleConfig();
+        c.runnerEnvironment[key] = bad;
+        expect(() => validate(c), `${key} ${JSON.stringify(bad)}`).toThrow(new RegExp(key));
+      }
+    }
+  });
+
   it('rejects a missing required section', () => {
     const c: any = exampleConfig();
     delete c.alerts;
