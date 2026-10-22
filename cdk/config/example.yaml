@@ -46,8 +46,8 @@ runnerEnvironment:      # read by the shared CI workflows
   goproxy: https://goproxy.example.test
   npmRegistry: https://npm.example.test
   nixSubstituter: https://nix.example.test/nix
-  mavenRegistry: https://maven.example.test/maven
-  gradleBuildCache: https://gradle.example.test/gradle/cache
+  mavenRegistry: https://maven.example.test
+  gradleBuildCache: https://gradle.example.test
   bazelRemoteCache: grpcs://bazel.example.test:443
   remoteBuilders: tcp://builder.example.test:1234
   extra: {}
