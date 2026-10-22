@@ -23,7 +23,7 @@ import {
 } from '@cloudsnorkel/cdk-github-runners';
 import { Construct } from 'constructs';
 import { CustomDomainApiAccess } from './access';
-import { GrunConfig, OrgConfig, SYSTEM_CA_BUNDLE, Shape, costTags, stackName, taskRoleName } from './config';
+import { GrunConfig, OrgConfig, SYSTEM_CA_BUNDLE, Shape, costTags, nixConfig, stackName, taskRoleName } from './config';
 import { retention } from './runner-image';
 
 export interface OrgRunnersProps {
@@ -48,6 +48,9 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   const env: Record<string, string> = {};
   if (e.goproxy) env.CI_RUNNER_GOPROXY = e.goproxy;
   if (e.npmRegistry) env.CI_RUNNER_NPM_REGISTRY = e.npmRegistry;
+  // The image's nix.conf lists only the upstream cache; this overlay (it wins) puts the
+  // env's pull-through cache first. Task environment, so no image rebuild.
+  if (e.nixSubstituter) env.NIX_CONFIG = nixConfig(e.nixSubstituter);
   if (e.bazelRemoteCache) env.CI_RUNNER_BAZEL_REMOTE_CACHE = e.bazelRemoteCache;
   if (e.remoteBuilders) env.CI_RUNNER_REMOTE_BUILDERS = e.remoteBuilders;
   // Node (installed by proto or devbox, not the system one) does not read the

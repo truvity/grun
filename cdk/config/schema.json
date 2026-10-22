@@ -150,6 +150,11 @@
       "properties": {
         "goproxy": { "description": "CI_RUNNER_GOPROXY", "type": "string" },
         "npmRegistry": { "description": "CI_RUNNER_NPM_REGISTRY", "type": "string" },
+        "nixSubstituter": {
+          "description": "The Nix pull-through cache, an http(s) URL without spaces (for example https://golang.cache.build.devel.truvity.private/nix). The tasks get NIX_CONFIG with `substituters = <this> https://cache.nixos.org/`, so the upstream stays the fallback.",
+          "type": "string",
+          "pattern": "^https?://[^\\s]+$"
+        },
         "bazelRemoteCache": { "description": "CI_RUNNER_BAZEL_REMOTE_CACHE", "type": "string" },
         "remoteBuilders": { "description": "CI_RUNNER_REMOTE_BUILDERS", "type": "string" },
         "extra": {

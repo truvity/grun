@@ -45,6 +45,7 @@ logRetentionDays: 30
 runnerEnvironment:      # read by the shared CI workflows
   goproxy: https://goproxy.example.test
   npmRegistry: https://npm.example.test
+  nixSubstituter: https://nix.example.test/nix
   bazelRemoteCache: grpcs://bazel.example.test:443
   remoteBuilders: tcp://builder.example.test:1234
   extra: {}

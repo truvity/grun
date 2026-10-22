@@ -108,6 +108,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `logRetentionDays` | 30 | every log group |
 | `runnerEnvironment.goproxy` | | `CI_RUNNER_GOPROXY` |
 | `runnerEnvironment.npmRegistry` | | `CI_RUNNER_NPM_REGISTRY` |
+| `runnerEnvironment.nixSubstituter` | | URL of a Nix binary cache in front of cache.nixos.org (ci-plane's cache-redirect serves one under `/nix`). Sets `NIX_CONFIG` on every task to `substituters = <url> https://cache.nixos.org/` and `connect-timeout = 5`: the cache first, the upstream as the automatic fallback, no image rebuild (the image's nix is a single-user install, so NIX_CONFIG applies as it is). Narinfos keep the upstream's signatures, so Nix's default trusted key verifies them |
 | `runnerEnvironment.bazelRemoteCache` | | `CI_RUNNER_BAZEL_REMOTE_CACHE` |
 | `runnerEnvironment.remoteBuilders` | | `CI_RUNNER_REMOTE_BUILDERS` |
 | `runnerEnvironment.extra` | | more variables for every task |

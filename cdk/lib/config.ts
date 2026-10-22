@@ -64,6 +64,7 @@ export interface GrunConfig {
   runnerEnvironment?: {
     goproxy?: string;
     npmRegistry?: string;
+    nixSubstituter?: string;
     bazelRemoteCache?: string;
     remoteBuilders?: string;
     extra?: Record<string, string>;
@@ -232,6 +233,27 @@ export function crossChecks(config: GrunConfig): string[] {
  */
 export const SYSTEM_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt';
 
+/** The upstream binary cache that stays in the list behind the estate's pull-through cache. */
+export const NIX_UPSTREAM_CACHE = 'https://cache.nixos.org/';
+
+/**
+ * The NIX_CONFIG of the runner tasks when a Nix pull-through cache is named.
+ *
+ * The image's nix is a single-user install owned by the runner user, whose own
+ * nix.conf lists only the upstream cache; NIX_CONFIG is read after it and wins,
+ * so no image rebuild is needed. It names the FULL list, the estate's cache first
+ * and the upstream as the automatic fallback: the `extra-` form would append to
+ * Nix's default and read upstream-first. The cache advertises a Priority below the
+ * upstream's, so Nix prefers it whatever the order. Narinfos pass through with the
+ * upstream's signatures, so Nix's default trusted key verifies them: no
+ * trusted-public-keys entry. A cache that does not answer costs a few seconds once
+ * per nix process (connect-timeout bounds each attempt; Nix then asks the upstream
+ * for that path), never a failed job.
+ */
+export function nixConfig(substituter: string): string {
+  return ['substituters = ' + substituter + ' ' + NIX_UPSTREAM_CACHE, 'connect-timeout = 5', ''].join('\n');
+}
+
 /** The variables the typed runnerEnvironment and buildkit settings produce. */
 function runnerEnvNames(config: GrunConfig): Record<string, true> {
   const e = config.runnerEnvironment ?? {};
@@ -239,6 +261,7 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   const names: Record<string, true> = {};
   if (e.goproxy) names.CI_RUNNER_GOPROXY = true;
   if (e.npmRegistry) names.CI_RUNNER_NPM_REGISTRY = true;
+  if (e.nixSubstituter) names.NIX_CONFIG = true;
   if (e.bazelRemoteCache) names.CI_RUNNER_BAZEL_REMOTE_CACHE = true;
   if (e.remoteBuilders) names.CI_RUNNER_REMOTE_BUILDERS = true;
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
