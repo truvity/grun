@@ -10,6 +10,7 @@ import {
   RunnerVersion,
 } from '@cloudsnorkel/cdk-github-runners';
 import { Construct } from 'constructs';
+import { AGENT_TARGET, COMPLETED_HOOK, STARTED_HOOK, agentBundle } from './agent';
 import { GrunConfig } from './config';
 
 export interface ParsedRepository {
@@ -75,6 +76,13 @@ export class RunnerImage extends Construct {
         !img.runnerVersion || img.runnerVersion === 'latest' ? RunnerVersion.latest() : RunnerVersion.specific(img.runnerVersion),
       ),
     ];
+    // grun-agent (agent/): the per-job sampler and the runner's warnings and errors,
+    // started and stopped by the job hooks, run by the runner's own Node.
+    components.push(
+      RunnerImageComponent.custom({ name: 'GrunAgent', assets: [{ source: agentBundle(), target: AGENT_TARGET }] }),
+      RunnerImageComponent.jobStartedHook(STARTED_HOOK),
+      RunnerImageComponent.jobCompletedHook(COMPLETED_HOOK),
+    );
     if (img.cloudWatchAgent ?? true) components.push(RunnerImageComponent.cloudWatchAgent());
     if (props.caFile) {
       components.push(RunnerImageComponent.extraCertificates(props.caFile, img.extraCertificates?.name ?? 'private-ca'));

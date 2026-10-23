@@ -314,6 +314,45 @@ describe('providers', () => {
     for (const [id, g] of resources(t.json, 'AWS::Logs::LogGroup')) expect(g.Properties.RetentionInDays, id).toBe(30);
   });
 
+  it('tells grun-agent who the task is and where its telemetry goes', () => {
+    expect(env(s.json, 'acmefglarge')).toMatchObject({
+      GRUN_TIER: 'example',
+      GRUN_ORG: 'acme',
+      GRUN_SIZE: 'fg-large',
+      GRUN_REGION: 'eu-central-1',
+      GRUN_OTLP_ENDPOINT: 'https://otlp.example.test',
+      GRUN_OTLP_ISSUER: 'https://issuer.example.test',
+      GRUN_OTLP_STS_AUDIENCE: 'https://issuer.example.test',
+      GRUN_OTLP_AUDIENCE: 'otlp',
+    });
+    expect(env(s.json, 'widgetsfgsmall')).toMatchObject({ GRUN_ORG: 'widgets', GRUN_SIZE: 'fg-small' });
+    const t = synth((c) => {
+      c.telemetry = undefined;
+    });
+    const e = env(t.json, 'acmefglarge');
+    expect(e.GRUN_SIZE).toBe('fg-large');
+    expect(Object.keys(e).filter((k) => k.startsWith('GRUN_OTLP_'))).toEqual([]);
+  });
+
+  it('lets the task roles mint a web identity token for the issuer only, and only with telemetry', () => {
+    const stmt = (json: any) =>
+      resources(json, 'AWS::IAM::Policy')
+        .filter(([id]) => /^acmefglargetaskTaskRoleDefaultPolicy/.test(id))
+        .flatMap(([, p]) => p.Properties.PolicyDocument.Statement as any[])
+        .filter((st) => ([] as string[]).concat(st.Action).includes('sts:GetWebIdentityToken'));
+    const [st] = stmt(s.json);
+    expect(st.Resource).toBe('*');
+    expect(st.Condition).toEqual({
+      'ForAllValues:StringEquals': { 'sts:IdentityTokenAudience': 'https://issuer.example.test' },
+      StringEquals: { 'sts:SigningAlgorithm': 'ES384' },
+      NumericLessThanEquals: { 'sts:DurationSeconds': '300' },
+    });
+    const t = synth((c) => {
+      c.telemetry = undefined;
+    });
+    expect(stmt(t.json)).toEqual([]);
+  });
+
   it('keeps the runner\'s diagnostic trace off stdout unless runner.traceToStdout asks for it', () => {
     expect(env(s.json, 'acmefglarge').ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT).toBe('false');
     expect(env(s.json, 'widgetsfgsmall').ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT).toBe('false');
@@ -351,6 +390,15 @@ describe('runner image', () => {
     expect(spec).toContain('job-started-hook.sh');
     expect(spec).toContain('ACTIONS_RUNNER_HOOK_JOB_STARTED');
     expect(spec).toContain('amazon-cloudwatch-agent');
+  });
+
+  it('adds grun-agent and the user job hooks that start and stop it', () => {
+    const spec = text(project().Source.BuildSpec);
+    expect(spec).toContain('/opt/grun/grun-agent.js');
+    expect(spec).toContain('/home/runner/job-started-hook-user.sh');
+    expect(spec).toContain('/home/runner/job-completed-hook-user.sh');
+    // The hooks go in before the hand-over to the runner user, which then owns them.
+    expect(spec.indexOf('job-completed-hook-user.sh')).toBeLessThan(spec.lastIndexOf('chown -R runner:runner /home/runner'));
   });
 
   it('trusts the private CA', () => {

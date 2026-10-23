@@ -124,6 +124,10 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runner.logRetentionDays` | `logRetentionDays` | retention of the runner tasks' log groups (the runner and init containers' stdout); the orchestration functions, the state machine and the image builder keep `logRetentionDays` |
 | `runner.traceToStdout` | false | `ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT` on every task. The upstream runner image sets it to 1, which copies the listener's and the worker's whole diagnostic trace (`[RUNNER …]` / `[WORKER …]`, INFO included) to stdout and so into the task's log group: nearly all of what those groups ingest. Off, stdout keeps the runner's terminal output (start-up, `Running job`, `Job … completed`, its error lines) and the hooks' lines; the trace is still written to `_diag` in the task, where cdk-github-runners reads the job's result |
 | `runner.secretKmsKeyArn` | | key that encrypts those parameters; the execution role gets `kms:Decrypt` on it. Omit for the AWS-managed SSM key |
+| `telemetry.otlpEndpoint`, `telemetry.issuerUrl` | | where grun-agent sends the runner's warnings and errors and each job's peaks (OTLP/HTTP JSON, `/v1/logs` and `/v1/metrics`), and the issuer whose `<issuerUrl>/token` trades the task role's web identity token for an access token (RFC 8693). Set, the task roles may call `sts:GetWebIdentityToken` for `stsAudience` (ES384, at most 300 s). Absent: the peaks are printed in the job log and nothing is sent (see "grun-agent") |
+| `telemetry.stsAudience` | `issuerUrl` | audience asked of STS |
+| `telemetry.otlpAudience` | `otlp` | audience and exchange client id of the access token |
+| `telemetry.sampleSeconds` | 5 | seconds between two samples of the task's stats |
 | `costTags.componentKey`, `componentValue` | `component`, `ci` | the stack tag `<componentKey>=<componentValue>`; the daily budget filters on it |
 | `costTags.environmentKey` | `environment` | the stack tag `<environmentKey>=<env>` |
 | `costTags.companyKey` | `company` | each organisation's resources and runner tasks carry `<companyKey>=<organisation name>` |
@@ -173,6 +177,39 @@ organisation permission "Self-hosted runners: read and write" it already needs
 for registration. A job from a repository the group does not admit never gets
 the runner, which then waits and is torn down at its timeout; to avoid the
 waste, install the App on the same repositories (a selected installation).
+
+### grun-agent
+
+Every task carries `agent/grun-agent.ts`, bundled with esbuild at synth time into one
+file (`/opt/grun/grun-agent.js` in the image) and run by the GitHub runner's own Node
+(`externals/node<N>`), so it needs nothing else from the image. cdk-github-runners'
+user job hooks start and stop it (`agent/job-started.sh`, `agent/job-completed.sh`).
+It is fail-open: it never fails, blocks or noticeably slows a job, and its own errors
+go to `/tmp/grun-agent/agent.log` in the task.
+
+- **Peaks, per job (one task is one job).** Every `telemetry.sampleSeconds` it reads
+  `${ECS_CONTAINER_METADATA_URI_V4}/task/stats` and keeps the task's peak memory (all
+  containers, less the inactive page cache, and with it), peak CPU over one interval
+  and the average. The job-completed hook prints them as one line,
+  `::notice title=grun peak::fg-medium 2 vCPU / 14336 MiB: memory 3120 MiB peak (22%) …`,
+  which is also a check-run annotation (`GET /repos/{owner}/{repo}/check-runs/{job id}/annotations`).
+- **The runner's warnings and errors.** With the trace off stdout
+  (`runner.traceToStdout`), the runner still writes it to `_diag`. Every 30 seconds the
+  agent reads what `Runner_*.log` and `Worker_*.log` gained and keeps the `WARN`, `ERR`
+  and `CRIT` records with their continuation lines (a stack trace), at most 1000 per task.
+  Records written before the job started are included; a task that never gets a job, and
+  what the runner writes after the job-completed hook, are not.
+- **Telemetry** (`telemetry`): the records as OTLP logs every minute, and at the end the
+  peaks as gauges (`grun_job_memory_peak_bytes`, `grun_job_memory_usage_peak_bytes`,
+  `grun_job_cpu_peak_cores`, `grun_job_cpu_average_cores`, `grun_job_duration_seconds`,
+  `grun_task_vcpu`, `grun_task_memory_bytes`; labels `tier`, `org`, `size`, `repo`,
+  `workflow`, `workflow_job`) and one log event (`event=grun.job.peak` with the numbers).
+  Every log carries the resource `service.name=grun`, `tier`, `org`, `size`, `repo`,
+  `workflow`, `job`, `run_id`, `run_attempt`, `runner`, `task_id`. The token: the task
+  role's `sts:GetWebIdentityToken` (audience `stsAudience`, ES384, 300 s), traded at
+  `<issuerUrl>/token` (client `otlpAudience`, empty password) for an access token for
+  `otlpAudience`, renewed a minute before it expires. Whoever runs the issuer must grant
+  each task role (`<stack>-<org>-<shape>-task`) the client.
 
 ### Runner hygiene
 

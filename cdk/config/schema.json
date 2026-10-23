@@ -257,6 +257,19 @@
         }
       }
     },
+    "telemetry": {
+      "description": "Where grun-agent sends the runner tasks' OpenTelemetry: the runner's warnings and errors as OTLP logs, the job's peaks as OTLP metrics and one log event. It authenticates with an access token traded (RFC 8693) for the task role's web identity token (sts:GetWebIdentityToken, which the task roles are then allowed for stsAudience). Absent: the agent prints the peaks in the job log and sends nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["otlpEndpoint", "issuerUrl"],
+      "properties": {
+        "otlpEndpoint": { "description": "OTLP/HTTP base URL; /v1/logs and /v1/metrics are appended.", "type": "string", "pattern": "^https://[^\\s/]+(/[^\\s]*)?$" },
+        "issuerUrl": { "description": "Base URL of the token issuer; the exchange is a POST to <issuerUrl>/token.", "type": "string", "pattern": "^https://[^\\s/]+(/[^\\s]*)?$" },
+        "stsAudience": { "description": "Audience asked of STS for the web identity token. Default: issuerUrl.", "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "otlpAudience": { "description": "Audience and exchange client id of the access token. Default: otlp.", "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "sampleSeconds": { "description": "Seconds between two samples of the task's stats. Default: 5.", "type": "integer", "minimum": 1, "maximum": 60 }
+      }
+    },
     "costCap": {
       "type": "object",
       "additionalProperties": false,

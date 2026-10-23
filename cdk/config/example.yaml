@@ -87,6 +87,16 @@ runner:
   # false) they hold only the runner's terminal output.
   logRetentionDays: 1
 
+# grun-agent's telemetry: the runner's warnings and errors (OTLP logs) and each job's
+# peaks (OTLP metrics and one log event), with an access token the agent trades for
+# the task role's web identity token. Absent: the peaks are printed in the job log only.
+telemetry:
+  otlpEndpoint: https://otlp.example.test
+  issuerUrl: https://issuer.example.test
+  # stsAudience: https://issuer.example.test   # default: issuerUrl
+  # otlpAudience: otlp                         # default
+  # sampleSeconds: 5                           # default
+
 costCap:
   maxConcurrentTasks: 20
   onExceed: skip
