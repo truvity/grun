@@ -109,6 +109,8 @@ export interface GrunConfig {
     logRetentionDays?: number;
     /** ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: the runner's diagnostic trace on stdout. Default: false. */
     traceToStdout?: boolean;
+    /** Start a runner again for a job still queued after its runner went away (lambda/requeue). Default: true. */
+    requeue?: boolean;
   };
   /**
    * Where the runner tasks send their OpenTelemetry (grun-agent: the runner's warnings
