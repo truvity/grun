@@ -44,7 +44,8 @@ export function settings(env: NodeJS.ProcessEnv): Settings {
   const endpoint = (env.GRUN_OTLP_ENDPOINT ?? '').replace(/\/+$/, '');
   const issuer = (env.GRUN_OTLP_ISSUER ?? '').replace(/\/+$/, '');
   return {
-    stateDir: env.GRUN_AGENT_DIR || '/tmp/grun-agent',
+    // In the runner user's home, outside the job's workspace, not in a shared temp dir.
+    stateDir: env.GRUN_AGENT_DIR || path.join(env.HOME || '/home/runner', '.grun-agent'),
     diagDir: env.GRUN_DIAG_DIR || '/home/runner/_diag',
     sampleMs: n(env.GRUN_SAMPLE_SECONDS, 5) * 1000,
     scanMs: 30_000,
@@ -192,22 +193,23 @@ export class DiagTail {
     const out: DiagRecord[] = [];
     for (const name of names) {
       const file = path.join(this.dir, name);
-      let size: number;
+      const from = this.offsets.get(name) ?? 0;
+      let buf: Buffer;
       try {
-        size = fs.statSync(file).size;
+        // One descriptor for the size and the read: the file only grows.
+        const fd = fs.openSync(file, 'r');
+        try {
+          const size = fs.fstatSync(fd).size;
+          if (size <= from) continue;
+          buf = Buffer.alloc(size - from);
+          buf = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, from));
+        } finally {
+          fs.closeSync(fd);
+        }
       } catch {
         continue;
       }
-      const from = this.offsets.get(name) ?? 0;
-      if (size <= from) continue;
-      const fd = fs.openSync(file, 'r');
-      const buf = Buffer.alloc(size - from);
-      try {
-        fs.readSync(fd, buf, 0, buf.length, from);
-      } finally {
-        fs.closeSync(fd);
-      }
-      this.offsets.set(name, size);
+      this.offsets.set(name, from + buf.length);
       const text = (this.partial.get(name) ?? '') + buf.toString('utf8');
       const lines = text.split(/\r?\n/);
       this.partial.set(name, lines.pop() ?? '');
@@ -533,7 +535,7 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
       /* fail-open */
     }
   };
-  fs.mkdirSync(s.stateDir, { recursive: true });
+  fs.mkdirSync(s.stateDir, { recursive: true, mode: 0o700 });
   fs.rmSync(f.summary, { force: true });
   fs.writeFileSync(f.pid, String(process.pid));
   const job = jobOf(env);

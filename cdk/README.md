@@ -185,7 +185,7 @@ file (`/opt/grun/grun-agent.js` in the image) and run by the GitHub runner's own
 (`externals/node<N>`), so it needs nothing else from the image. cdk-github-runners'
 user job hooks start and stop it (`agent/job-started.sh`, `agent/job-completed.sh`).
 It is fail-open: it never fails, blocks or noticeably slows a job, and its own errors
-go to `/tmp/grun-agent/agent.log` in the task.
+go to `~/.grun-agent/agent.log` of the runner user in the task.
 
 - **Peaks, per job (one task is one job).** Every `telemetry.sampleSeconds` it reads
   `${ECS_CONTAINER_METADATA_URI_V4}/task/stats` and keeps the task's peak memory (all
