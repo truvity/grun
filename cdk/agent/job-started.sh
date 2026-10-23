@@ -10,9 +10,9 @@
 # those to close.
 node=$(ls -d /home/runner/externals/node*/bin/node 2>/dev/null | sort -V | tail -n 1)
 agent=/opt/grun/grun-agent.js
-dir=${GRUN_AGENT_DIR:-/tmp/grun-agent}
+dir=${GRUN_AGENT_DIR:-${HOME:-/home/runner}/.grun-agent}
 if [ -n "$node" ] && [ -x "$node" ] && [ -r "$agent" ]; then
-  mkdir -p "$dir" 2>/dev/null || true
+  mkdir -p -m 0700 "$dir" 2>/dev/null || true
   env -u RUNNER_TRACKING_ID nohup "$node" "$agent" daemon </dev/null >>"$dir/agent.log" 2>&1 &
 fi
 exit 0

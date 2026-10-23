@@ -209,7 +209,7 @@ describe('grun-agent: the bundle', () => {
     expect(code.length).toBeLessThan(2 * 1024 * 1024);
     // The SDK is inside (the image has no node_modules); only the optional signers it names in its own messages are not.
     expect(code).not.toMatch(/require\("@(aws-sdk\/client-sts|smithy\/[a-z-]+)"\)/);
-    // The same input gives the same file, so the image is not rebuilt for nothing.
+    // Built once per process; the asset is hashed by content, so a rebuild with the same input changes nothing.
     expect(agentBundle()).toBe(file);
   });
 });

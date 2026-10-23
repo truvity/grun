@@ -1,8 +1,7 @@
 // grun-agent, bundled for the runner image: one CommonJS file with its dependencies
 // (the STS client), run by the GitHub runner's own Node. Built with esbuild at synth
-// time, deterministically, into a content-addressed temp directory, so the image's
-// component hash moves only when the agent's code or its locked dependencies do.
-import * as crypto from 'node:crypto';
+// time, deterministically; the asset is hashed by content, so the image's component
+// hash moves only when the agent's code or its locked dependencies do.
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -31,11 +30,10 @@ export function agentBundle(): string {
     logLevel: 'silent',
   });
   const code = result.outputFiles[0].contents;
-  const hash = crypto.createHash('sha256').update(code).digest('hex').slice(0, 16);
-  const dir = path.join(os.tmpdir(), `grun-agent-${hash}`);
-  fs.mkdirSync(dir, { recursive: true });
+  // A private directory of this process; the asset is hashed by content, not by path.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grun-agent-'));
   const file = path.join(dir, 'grun-agent.js');
-  if (!fs.existsSync(file)) fs.writeFileSync(file, code);
+  fs.writeFileSync(file, code, { flag: 'wx', mode: 0o644 });
   bundled = file;
   return file;
 }
