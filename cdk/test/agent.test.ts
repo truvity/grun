@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DiagTail,
+  benign,
   Peaks,
   eventRecord,
   jobOf,
@@ -34,6 +35,18 @@ describe('grun-agent: task stats', () => {
   it('reads cgroup v2 names too', () => {
     const s = parseStats({ a: { memory_stats: { usage: 10 * MIB, stats: { inactive_file: 4 * MIB } }, cpu_stats: { cpu_usage: { total_usage: 1 } } } });
     expect(s?.workingSet).toBe(6 * MIB);
+  });
+
+  it('measures CPU against the readings\' own time: a cached reading polled twice is no burst', () => {
+    const at = (iso: string, cpuNs: number) => parseStats({ a: { read: iso, memory_stats: { usage: 1 }, cpu_stats: { cpu_usage: { total_usage: cpuNs } } } })!;
+    expect(at('0001-01-01T00:00:00Z', 1).readMs).toBeUndefined();
+    const p = new Peaks();
+    p.add(at('2026-10-23T22:00:00Z', 1e9), 0);
+    // The poll ran 1 s later but the endpoint served the same reading; then a reading 20 s on.
+    p.add(at('2026-10-23T22:00:00Z', 1e9), 1_000);
+    p.add(at('2026-10-23T22:00:20Z', 61e9), 21_500); // 60 s of CPU in 20 s: 3 cores, not 60/20.5 or 60/1
+    expect(p.cpuPeak).toBeCloseTo(3);
+    expect(p.cpuAverage()).toBeCloseTo(3);
   });
 
   it('answers nothing for nothing', () => {
@@ -105,6 +118,12 @@ describe('grun-agent: the runner diagnostic logs', () => {
     const t = new DiagTail(d);
     const [r] = [...t.scan(), ...t.close()];
     expect(r.message.split('\n')).toHaveLength(41);
+  });
+
+  it('drops the broker ping that every healthy job logs as an error, nothing else', () => {
+    expect(benign({ message: 'GET request to wss://broker.actions.githubusercontent.com/_ws/ping.sock failed. HTTP Status: SwitchingProtocols' })).toBe(true);
+    expect(benign({ message: 'GET request to wss://broker.actions.githubusercontent.com/_ws/ping.sock failed. HTTP Status: Unauthorized' })).toBe(false);
+    expect(benign({ message: 'boom' })).toBe(false);
   });
 
   it('is empty without the directory', () => {

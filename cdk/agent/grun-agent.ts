@@ -98,6 +98,11 @@ export interface Sample {
   maxUsage: number;
   /** CPU time of every container so far, nanoseconds. */
   cpuNs: number;
+  /**
+   * When the stats were read (the newest container's `read`). The endpoint serves
+   * cached readings, so CPU rates are measured against this, not the poll's clock.
+   */
+  readMs?: number;
 }
 
 /** Sums the docker-style stats of `<metadata>/task/stats` over the task's containers. */
@@ -123,6 +128,9 @@ export function parseStats(stats: unknown): Sample | undefined {
       seen = true;
       out.cpuNs += cpu;
     }
+    const read = typeof c.read === 'string' ? Date.parse(c.read) : NaN;
+    // A container that has not been read reports the zero time (0001-01-01).
+    if (Number.isFinite(read) && read > Date.UTC(2000, 0, 1)) out.readMs = Math.max(out.readMs ?? 0, read);
   }
   return seen ? out : undefined;
 }
@@ -141,12 +149,16 @@ export class Peaks {
     this.usage = Math.max(this.usage, s.usage);
     this.workingSet = Math.max(this.workingSet, s.workingSet);
     this.maxUsage = Math.max(this.maxUsage, s.maxUsage);
-    if (this.last && tMs > this.last.t && s.cpuNs >= this.last.cpuNs) {
-      const cores = (s.cpuNs - this.last.cpuNs) / ((tMs - this.last.t) * 1e6);
+    // The reading's own time where it has one: the same cached reading twice adds
+    // nothing, and a reading late by a poll does not show as a burst.
+    const t = s.readMs ?? tMs;
+    if (this.last && t <= this.last.t) return;
+    if (this.last && s.cpuNs >= this.last.cpuNs) {
+      const cores = (s.cpuNs - this.last.cpuNs) / ((t - this.last.t) * 1e6);
       this.cpuPeak = Math.max(this.cpuPeak, cores);
     }
-    if (!this.first) this.first = { t: tMs, cpuNs: s.cpuNs };
-    this.last = { t: tMs, cpuNs: s.cpuNs };
+    if (!this.first) this.first = { t, cpuNs: s.cpuNs };
+    this.last = { t, cpuNs: s.cpuNs };
   }
 
   /** Average cores between the first and the last sample. */
@@ -173,6 +185,15 @@ export interface DiagRecord {
 const HEADER = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ) (CRIT|ERR|WARN|INFO|VERB|\w+) +([^\]]*)\] ?(.*)$/;
 const KEEP = new Set(['WARN', 'ERR', 'CRIT']);
 const MAX_LINES = 40;
+
+// Records the runner writes at ERR or WARN on every healthy job. The broker's
+// websocket ping "fails" with 101 Switching Protocols, which is the upgrade succeeding.
+const BENIGN: RegExp[] = [/^GET request to wss:\/\/\S+\/ping\.sock failed\. HTTP Status: SwitchingProtocols$/];
+
+/** A record that says nothing about a misbehaving runner. */
+export function benign(r: Pick<DiagRecord, 'message'>): boolean {
+  return BENIGN.some((re) => re.test(r.message));
+}
 const MAX_MESSAGE = 8192;
 
 /** Reads what the runner appended to its diagnostic logs since the last scan. */
@@ -574,6 +595,7 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
   };
   const scan = (records: DiagRecord[]) => {
     for (const r of records) {
+      if (benign(r)) continue;
       if (pending.length >= MAX_RECORDS) dropped++;
       else pending.push(r);
     }
