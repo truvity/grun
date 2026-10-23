@@ -246,6 +246,10 @@
           "type": "integer",
           "enum": [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
         },
+        "requeue": {
+          "description": "Every five minutes, start a runner again for each job that is still queued in a run of which a runner of this stack ended without a job (the idle reaper) or failed to start, less the runners still running for that run. GitHub sends the queued webhook once, so a matrix job made runnable by max-parallel after its runner was reaped would otherwise stay queued. The task cap holds; jobs queued for more than six hours and finished runs are left alone. Absent or true: on.",
+          "type": "boolean"
+        },
         "traceToStdout": {
           "description": "Copy the runner's own diagnostic trace (the listener's and the worker's, also written to _diag in the task) to the container's stdout and so to its log group: ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT. The upstream runner image turns it on, which is almost all of what the log groups ingest. Absent or false: off, and stdout keeps the runner's terminal output only.",
           "type": "boolean"

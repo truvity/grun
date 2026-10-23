@@ -502,6 +502,52 @@ describe('idle timeout', () => {
   });
 });
 
+describe('requeue', () => {
+  const fn = (json: any) => resources(json, 'AWS::Lambda::Function').find(([, f]) => /Starts a runner again/.test(f.Properties.Description ?? ''));
+
+  it('runs every five minutes with every organisation\'s state machine and secrets, and the cap', () => {
+    const [id, f] = fn(s.json)!;
+    expect(f.Properties.ReservedConcurrentExecutions).toBe(1);
+    const env = f.Properties.Environment.Variables;
+    expect(env.MAX_CONCURRENT_TASKS).toBe('20');
+    const targets = text(env.TARGETS);
+    for (const org of ['acme', 'widgets']) expect(targets).toContain(`\\"org\\":\\"${org}\\"`);
+    const rules = resources(s.json, 'AWS::Events::Rule').filter(([, r]) => text(r.Properties.Targets).includes(id));
+    expect(rules.map(([, r]) => r.Properties.ScheduleExpression)).toEqual(['rate(5 minutes)']);
+  });
+
+  it('may start and read the orchestrators, read the App secrets and count the cluster\'s tasks, nothing else', () => {
+    const [id] = fn(s.json)!;
+    const role = id.replace(/[0-9A-F]{8}$/, '');
+    const stmts = resources(s.json, 'AWS::IAM::Policy')
+      .filter(([pid]) => pid.startsWith(`${role}ServiceRoleDefaultPolicy`))
+      .flatMap(([, p]) => p.Properties.PolicyDocument.Statement as any[]);
+    const actions = new Set(stmts.flatMap((st) => ([] as string[]).concat(st.Action)));
+    // StateMachine.grantRead and grantStartExecution, the secrets' grantRead, and ListTasks.
+    expect([...actions].sort()).toEqual([
+      'ecs:ListTasks',
+      'secretsmanager:DescribeSecret',
+      'secretsmanager:GetSecretValue',
+      'states:DescribeActivity',
+      'states:DescribeExecution',
+      'states:DescribeStateMachine',
+      'states:DescribeStateMachineForExecution',
+      'states:GetExecutionHistory',
+      'states:ListActivities',
+      'states:ListExecutions',
+      'states:ListStateMachines',
+      'states:StartExecution',
+    ]);
+  });
+
+  it('is left out with runner.requeue false', () => {
+    const t = synth((c) => {
+      c.runner!.requeue = false;
+    });
+    expect(fn(t.json)).toBeUndefined();
+  });
+});
+
 describe('selector, cap and budget', () => {
   const fn = (desc: RegExp) =>
     resources(s.json, 'AWS::Lambda::Function').find(([, f]) => desc.test(f.Properties.Description ?? ''))![1].Properties;

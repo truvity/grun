@@ -23,6 +23,7 @@ import {
   aws_s3 as s3,
   aws_sns as sns,
   aws_sns_subscriptions as subs,
+  aws_stepfunctions as sfn,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, allowList, costTags, qualifier, stackName } from './config';
@@ -177,6 +178,9 @@ export class GrunStack extends Stack {
       });
     }
 
+    // ---- a runner again for a job still queued after its runner went away
+    if (config.runner?.requeue ?? true) this.addRequeue(config, name, maxTasks);
+
     // ---- failed image builds go to the same people
     this.addImageBuildAlert(name, image.buildProject());
 
@@ -213,6 +217,82 @@ export class GrunStack extends Stack {
         ),
       }),
     });
+  }
+
+  /**
+   * The requeue function (lambda/requeue): every five minutes it looks at the
+   * runs of which a runner ended without a job (the idle reaper) or failed to
+   * start, and starts a runner again for each of their jobs still queued that
+   * no running runner of the stack is there for. A matrix with max-parallel
+   * makes its last jobs runnable after their runners were reaped, and GitHub
+   * sends the queued webhook only once.
+   */
+  private addRequeue(config: GrunConfig, name: string, maxTasks: number): void {
+    const orgTargets = config.orgs.map((org) => {
+      const runners = this.orgs[org.name].runners;
+      // The library keeps its state machine private; this is the only handle on it.
+      const orchestrator = (runners as unknown as { orchestrator: sfn.StateMachine }).orchestrator;
+      if (!orchestrator?.stateMachineArn) throw new Error('cdk-github-runners has no orchestrator to requeue through (the library changed its layout)');
+      const s = this.orgs[org.name].secrets;
+      return { org: org.name, orchestrator, github: s.github, privateKey: s.privateKey };
+    });
+    const fn = new nodejs.NodejsFunction(this, 'Requeue', {
+      description: 'Starts a runner again for a job still queued after the runner started for it went away',
+      entry: path.join(LAMBDA_ROOT, 'requeue', 'handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      timeout: Duration.seconds(120),
+      memorySize: 256,
+      // Two rounds at once would count the same queued job twice.
+      reservedConcurrentExecutions: 1,
+      environment: {
+        TARGETS: this.toJsonString(
+          orgTargets.map((t) => ({
+            org: t.org,
+            stateMachineArn: t.orchestrator.stateMachineArn,
+            githubSecretArn: t.github.secretArn,
+            privateKeySecretArn: t.privateKey.secretArn,
+          })),
+        ),
+        CLUSTER_ARN: this.cluster.clusterArn,
+        MAX_CONCURRENT_TASKS: String(maxTasks),
+        WINDOW_MINUTES: '30',
+        MAX_JOB_AGE_MINUTES: '360',
+      },
+      logGroup: new logs.LogGroup(this, 'RequeueLogs', {
+        retention: retention(config.logRetentionDays ?? 30),
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      bundling: { externalModules: ['@aws-sdk/*'], sourceMap: false },
+    });
+    for (const t of orgTargets) {
+      t.orchestrator.grantStartExecution(fn);
+      t.orchestrator.grantRead(fn);
+      t.github.grantRead(fn);
+      t.privateKey.grantRead(fn);
+    }
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ecs:ListTasks'],
+        resources: ['*'],
+        conditions: { ArnEquals: { 'ecs:cluster': this.cluster.clusterArn } },
+      }),
+    );
+    new events.Rule(this, 'RequeueSchedule', {
+      description: `${name}: start a runner again for a job still queued after its runner went away`,
+      schedule: events.Schedule.rate(Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(fn)],
+    });
+    new cloudwatch.Alarm(this, 'RequeueFailing', {
+      alarmDescription: `${name}: the requeue function is failing; a job stranded by a matrix's max-parallel may stay queued`,
+      metric: fn.metricErrors({ period: Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cwActions.SnsAction(this.alertTopic));
   }
 
   private addSecretSync(config: GrunConfig): void {
