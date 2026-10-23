@@ -74,6 +74,19 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   // group; the runner writes the same trace to _diag in the task either way, and the job's
   // output lives in GitHub. Off unless runner.traceToStdout asks for it.
   env.ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT = config.runner?.traceToStdout ? 'true' : 'false';
+  // grun-agent (agent/): who the task is, and where its telemetry goes. GRUN_SIZE is
+  // per shape (OrgRunners).
+  env.GRUN_TIER = config.env;
+  env.GRUN_ORG = org.name;
+  env.GRUN_REGION = config.region;
+  const t = config.telemetry;
+  if (t) {
+    env.GRUN_OTLP_ENDPOINT = t.otlpEndpoint;
+    env.GRUN_OTLP_ISSUER = t.issuerUrl;
+    env.GRUN_OTLP_STS_AUDIENCE = t.stsAudience ?? t.issuerUrl;
+    env.GRUN_OTLP_AUDIENCE = t.otlpAudience ?? 'otlp';
+    if (t.sampleSeconds) env.GRUN_SAMPLE_SECONDS = String(t.sampleSeconds);
+  }
   return { ...env, ...(e.extra ?? {}), ...(org.environment ?? {}) };
 }
 
@@ -124,6 +137,7 @@ export class OrgRunners extends Construct {
       // The container and task are marked internal by the library but are the
       // only handle on the task definition; there is no property for them.
       for (const [k, v] of Object.entries(env)) provider.container.addEnvironment(k, v);
+      provider.container.addEnvironment('GRUN_SIZE', shape.label);
       this.addClientCertificate(provider, config);
       this.addSecretEnvironment(provider, config);
 
@@ -138,6 +152,23 @@ export class OrgRunners extends Construct {
         role.addToPrincipalPolicy(iam.PolicyStatement.fromJson(s));
       }
       if (config.reports?.taskRolesCanWrite ?? true) props.reportsBucket.grantReadWrite(role);
+      // grun-agent's telemetry: a web identity token for the issuer's audience only, with
+      // the algorithm and lifetime the agent asks for. sts:IdentityTokenAudience is
+      // multi-valued, hence ForAllValues (safe: the audience is a required parameter).
+      if (config.telemetry) {
+        role.addToPrincipalPolicy(
+          new iam.PolicyStatement({
+            sid: 'OutboundIdentityTokenForTelemetry',
+            actions: ['sts:GetWebIdentityToken'],
+            resources: ['*'],
+            conditions: {
+              'ForAllValues:StringEquals': { 'sts:IdentityTokenAudience': config.telemetry.stsAudience ?? config.telemetry.issuerUrl },
+              StringEquals: { 'sts:SigningAlgorithm': 'ES384' },
+              NumericLessThanEquals: { 'sts:DurationSeconds': '300' },
+            },
+          }),
+        );
+      }
       this.taskRoles.push(role);
     }
 

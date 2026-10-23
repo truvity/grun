@@ -110,6 +110,23 @@ export interface GrunConfig {
     /** ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: the runner's diagnostic trace on stdout. Default: false. */
     traceToStdout?: boolean;
   };
+  /**
+   * Where the runner tasks send their OpenTelemetry (grun-agent: the runner's warnings
+   * and errors, the job's peaks). Absent: the agent still prints the peaks in the job
+   * log and sends nothing.
+   */
+  telemetry?: {
+    /** OTLP/HTTP base URL; /v1/logs and /v1/metrics are appended. */
+    otlpEndpoint: string;
+    /** Base URL of the token issuer whose <issuer>/token trades the task role's web identity token (RFC 8693). */
+    issuerUrl: string;
+    /** Audience asked of STS for the web identity token. Default: issuerUrl. */
+    stsAudience?: string;
+    /** Audience (and exchange client id) of the access token the endpoint accepts. Default: otlp. */
+    otlpAudience?: string;
+    /** Seconds between two samples of the task's stats. Default: 5. */
+    sampleSeconds?: number;
+  };
   costCap?: { maxConcurrentTasks?: number; onExceed?: 'skip' | 'defer'; dailyBudgetUsd?: number };
   alerts: { emails: string[] };
   warm?: {
@@ -313,6 +330,11 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
   if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;
   names.ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT = true;
+  for (const n of ['GRUN_TIER', 'GRUN_ORG', 'GRUN_REGION', 'GRUN_SIZE']) names[n] = true;
+  if (config.telemetry) {
+    for (const n of ['GRUN_OTLP_ENDPOINT', 'GRUN_OTLP_ISSUER', 'GRUN_OTLP_STS_AUDIENCE', 'GRUN_OTLP_AUDIENCE']) names[n] = true;
+    if (config.telemetry.sampleSeconds) names.GRUN_SAMPLE_SECONDS = true;
+  }
   return names;
 }
 
