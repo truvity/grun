@@ -82,6 +82,10 @@ runner:
   # A registered runner that takes no job is stopped and removed after this many
   # minutes (measured from registration). Default: 5.
   idleTimeoutMinutes: 2
+  # The runner tasks' log groups keep a day (logRetentionDays above still holds for
+  # the orchestration). With the runner's trace off stdout (traceToStdout, default
+  # false) they hold only the runner's terminal output.
+  logRetentionDays: 1
 
 costCap:
   maxConcurrentTasks: 20

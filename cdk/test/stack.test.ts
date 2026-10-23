@@ -298,6 +298,30 @@ describe('providers', () => {
       expect(g.Properties.RetentionInDays, id).toBeDefined();
     }
   });
+
+  it('keeps the runner tasks\' log groups for runner.logRetentionDays, everything else for logRetentionDays', () => {
+    const groups = resources(s.json, 'AWS::Logs::LogGroup');
+    const tasks = groups.filter(([id]) => /fg(large|medium|small)logs/.test(id));
+    expect(tasks).toHaveLength(6);
+    for (const [id, g] of tasks) expect(g.Properties.RetentionInDays, id).toBe(1);
+    const rest = groups.filter(([id]) => !/fg(large|medium|small)logs/.test(id));
+    expect(rest.length).toBeGreaterThan(0);
+    for (const [id, g] of rest) expect(g.Properties.RetentionInDays, id).toBe(30);
+    // Absent, the tasks keep what everything keeps.
+    const t = synth((c) => {
+      delete c.runner!.logRetentionDays;
+    });
+    for (const [id, g] of resources(t.json, 'AWS::Logs::LogGroup')) expect(g.Properties.RetentionInDays, id).toBe(30);
+  });
+
+  it('keeps the runner\'s diagnostic trace off stdout unless runner.traceToStdout asks for it', () => {
+    expect(env(s.json, 'acmefglarge').ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT).toBe('false');
+    expect(env(s.json, 'widgetsfgsmall').ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT).toBe('false');
+    const t = synth((c) => {
+      c.runner!.traceToStdout = true;
+    });
+    expect(env(t.json, 'acmefglarge').ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT).toBe('true');
+  });
 });
 
 describe('runner image', () => {
@@ -897,11 +921,22 @@ describe('rules AWS enforces at create time', () => {
       expect(VALID_RETENTION, `${days}`).toContain(days);
       const t = synth((c) => {
         c.logRetentionDays = days;
+        delete c.runner!.logRetentionDays;
       });
       // The groups the stack makes itself follow the setting; the library's own keep their fixed one.
       for (const [id, g] of resources(t.json, 'AWS::Logs::LogGroup')) {
         expect(VALID_RETENTION, id).toContain(g.Properties.RetentionInDays);
         if (/^(ProviderSelectorLogs|SecretSyncLogs|acmefg)/.test(id)) expect(g.Properties.RetentionInDays, id).toBe(days);
+      }
+    }
+    // runner.logRetentionDays takes the same values and reaches the task groups only.
+    expect(schema.properties.runner.properties.logRetentionDays.enum).toEqual(allowed);
+    for (const days of allowed) {
+      const t = synth((c) => {
+        c.runner!.logRetentionDays = days;
+      });
+      for (const [id, g] of resources(t.json, 'AWS::Logs::LogGroup')) {
+        if (/^acmefg/.test(id)) expect(g.Properties.RetentionInDays, id).toBe(days);
       }
     }
   });

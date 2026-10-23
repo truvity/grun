@@ -102,6 +102,28 @@ describe('config', () => {
     }
   });
 
+  it('accepts runner.logRetentionDays from the CloudWatch values and runner.traceToStdout as a boolean', () => {
+    for (const bad of [0, 2, '1', null]) {
+      const c: any = exampleConfig();
+      c.runner.logRetentionDays = bad;
+      expect(() => validate(c), JSON.stringify(bad)).toThrow(/logRetentionDays/);
+    }
+    for (const bad of ['false', 0, null]) {
+      const c: any = exampleConfig();
+      c.runner.traceToStdout = bad;
+      expect(() => validate(c), JSON.stringify(bad)).toThrow(/traceToStdout/);
+    }
+    const c: any = exampleConfig();
+    c.runner.traceToStdout = true;
+    expect(() => validate(c)).not.toThrow();
+  });
+
+  it('refuses ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT as an SSM secret: the app sets it', () => {
+    const c: any = exampleConfig();
+    c.runner.secretEnv.ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT = '/example/x';
+    expect(() => validate(c)).toThrow(/ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT/);
+  });
+
   describe('orgs[].allow', () => {
     const withAllow = (allow: unknown) => {
       const c: any = exampleConfig();

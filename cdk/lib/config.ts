@@ -105,6 +105,10 @@ export interface GrunConfig {
     secretKmsKeyArn?: string;
     /** Minutes a registered runner may stay idle before it is stopped and removed. Default: the library's 5. */
     idleTimeoutMinutes?: number;
+    /** Retention of the runner tasks' log groups. Default: logRetentionDays. */
+    logRetentionDays?: number;
+    /** ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: the runner's diagnostic trace on stdout. Default: false. */
+    traceToStdout?: boolean;
   };
   costCap?: { maxConcurrentTasks?: number; onExceed?: 'skip' | 'defer'; dailyBudgetUsd?: number };
   alerts: { emails: string[] };
@@ -308,6 +312,7 @@ function runnerEnvNames(config: GrunConfig): Record<string, true> {
   if (bk?.clientCertSecret) names.CI_BUILDKIT_TLS_DIR = true;
   if (bk?.tlsServerName) names.CI_BUILDKIT_TLS_SERVERNAME = true;
   if (config.runnerImage.extraCertificates) names.NODE_EXTRA_CA_CERTS = true;
+  names.ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT = true;
   return names;
 }
 

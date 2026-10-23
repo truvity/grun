@@ -105,7 +105,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerImage.extraCertificates.name` | `private-ca` | |
 | `shapes[]` | the three below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (21 to 200) |
 | `requireSelfHostedLabel` | false | false lets a job say `runs-on: fg-large` alone |
-| `logRetentionDays` | 30 | every log group |
+| `logRetentionDays` | 30 | every log group (the runner tasks' own: see `runner.logRetentionDays`) |
 | `runnerEnvironment.goproxy` | | `CI_RUNNER_GOPROXY` |
 | `runnerEnvironment.npmRegistry` | | `CI_RUNNER_NPM_REGISTRY` |
 | `runnerEnvironment.nixSubstituter` | | URL of a Nix binary cache in front of cache.nixos.org (ci-plane's cache-redirect serves one under `/nix`). Sets `NIX_CONFIG` on every task to `substituters = <url> https://cache.nixos.org/` and `connect-timeout = 5`: the cache first, the upstream as the automatic fallback, no image rebuild (the image's nix is a single-user install, so NIX_CONFIG applies as it is). Narinfos keep the upstream's signatures, so Nix's default trusted key verifies them |
@@ -121,6 +121,8 @@ marked; everything else has the default shown. The schema is authoritative.
 | `buildkit.tlsServerName` | | `CI_BUILDKIT_TLS_SERVERNAME` |
 | `runner.secretEnv` | | `{ENV_NAME: SSM parameter name or ARN}`: ECS injects each as that environment variable when a task starts (see below) |
 | `runner.idleTimeoutMinutes` | 5 (the library's) | minutes a registered runner may stay idle before the idle reaper stops it and removes it from GitHub (see "Runner hygiene") |
+| `runner.logRetentionDays` | `logRetentionDays` | retention of the runner tasks' log groups (the runner and init containers' stdout); the orchestration functions, the state machine and the image builder keep `logRetentionDays` |
+| `runner.traceToStdout` | false | `ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT` on every task. The upstream runner image sets it to 1, which copies the listener's and the worker's whole diagnostic trace (`[RUNNER …]` / `[WORKER …]`, INFO included) to stdout and so into the task's log group: nearly all of what those groups ingest. Off, stdout keeps the runner's terminal output (start-up, `Running job`, `Job … completed`, its error lines) and the hooks' lines; the trace is still written to `_diag` in the task, where cdk-github-runners reads the job's result |
 | `runner.secretKmsKeyArn` | | key that encrypts those parameters; the execution role gets `kms:Decrypt` on it. Omit for the AWS-managed SSM key |
 | `costTags.componentKey`, `componentValue` | `component`, `ci` | the stack tag `<componentKey>=<componentValue>`; the daily budget filters on it |
 | `costTags.environmentKey` | `environment` | the stack tag `<environmentKey>=<env>` |

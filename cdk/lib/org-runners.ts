@@ -69,6 +69,11 @@ export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<st
   const bk = config.buildkit;
   if (bk?.clientCertSecret) env.CI_BUILDKIT_TLS_DIR = bk.tlsDir ?? '/etc/ci-buildkit-tls';
   if (bk?.tlsServerName) env.CI_BUILDKIT_TLS_SERVERNAME = bk.tlsServerName;
+  // The upstream runner image sets ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1, which copies the
+  // listener's and the worker's whole trace (INFO included) to stdout and so into the log
+  // group; the runner writes the same trace to _diag in the task either way, and the job's
+  // output lives in GitHub. Off unless runner.traceToStdout asks for it.
+  env.ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT = config.runner?.traceToStdout ? 'true' : 'false';
   return { ...env, ...(e.extra ?? {}), ...(org.environment ?? {}) };
 }
 
@@ -91,6 +96,8 @@ export class OrgRunners extends Construct {
     Tags.of(this).add(tagNames.companyKey, org.name);
     const env = runnerEnvironment(config, org);
     const logRetention = retention(config.logRetentionDays ?? 30);
+    // The runner tasks' own log groups may keep less than the orchestration's.
+    const taskLogRetention = retention(config.runner?.logRetentionDays ?? config.logRetentionDays ?? 30);
 
     for (const shape of props.shapes) {
       const provider = new FargateRunnerProvider(this, shape.label, {
@@ -106,7 +113,7 @@ export class OrgRunners extends Construct {
         memoryLimitMiB: Math.round(shape.memoryGiB * 1024),
         ephemeralStorageGiB: shape.ephemeralStorageGiB ?? 50,
         spot: false,
-        logRetention,
+        logRetention: taskLogRetention,
         // The task definition carries the tag too and the state machine
         // propagates it (PropagateTags), but the tag here rides on RunTask
         // itself, so a task is tagged even if propagation is ever dropped.
