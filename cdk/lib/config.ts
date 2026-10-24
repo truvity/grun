@@ -17,6 +17,13 @@ export interface Shape {
   vcpu: number;
   memoryGiB: number;
   ephemeralStorageGiB?: number;
+  /**
+   * Run the tasks on the FARGATE_SPOT capacity provider. A Spot interruption stops the
+   * task and fails the job it runs: GitHub does not retry it and the requeue (runner.requeue)
+   * covers only a job that never got a runner. For a trial on a tier where a rerun is cheap
+   * (preview), never for the stable tier. Default: false (on-demand).
+   */
+  spot?: boolean;
 }
 
 /** One repository the organisation's runners may be started for. */
@@ -144,11 +151,24 @@ export interface GrunConfig {
   orgs: OrgConfig[];
 }
 
+/**
+ * The extra-large shape (owner SZ13 B, 2026-10-24: 8 vCPU / 16 GB), the upper arm of the
+ * sizing experiment. One value: change the size here. Fargate takes 16 to 60 GB for 8 vCPU
+ * in 4 GB steps.
+ */
+export const XLARGE_SHAPE: Shape = { label: 'fg-xlarge', vcpu: 8, memoryGiB: 16, ephemeralStorageGiB: 100 };
+
 /** The shapes the project runs with unless the file says otherwise. */
 export const DEFAULT_SHAPES: Shape[] = [
   { label: 'fg-large', vcpu: 4, memoryGiB: 24, ephemeralStorageGiB: 100 },
   { label: 'fg-medium', vcpu: 2, memoryGiB: 14, ephemeralStorageGiB: 50 },
   { label: 'fg-small', vcpu: 1, memoryGiB: 6, ephemeralStorageGiB: 50 },
+  // The sizes of the runner-sizing decisions (2026-10-24, SZ1): an extra-small one for the
+  // trivial jobs (the ephemeral storage is Fargate's minimum) and a Spot twin of the new
+  // medium (SZ10) for the trial that starts with the Renovate fleet jobs.
+  { label: 'fg-xsmall', vcpu: 0.5, memoryGiB: 1, ephemeralStorageGiB: 21 },
+  { label: 'fg-medium-spot', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 50, spot: true },
+  XLARGE_SHAPE,
 ];
 
 export const DEFAULT_PERMISSIONS_BOUNDARY = 'pb@tech-grun';
@@ -227,6 +247,8 @@ export function crossChecks(config: GrunConfig): string[] {
   }
   for (const pool of config.warm?.pools ?? []) {
     if (!labels.includes(pool.shape)) problems.push(`warm.pools: unknown shape ${pool.shape}`);
+    // A warm runner waits for hours for a job: Spot reclaims such a task at any time.
+    if (shapes.find((s) => s.label === pool.shape)?.spot) problems.push(`warm.pools: ${pool.shape} is a Spot shape`);
   }
   for (const s of shapes) {
     if (s.ephemeralStorageGiB !== undefined && s.ephemeralStorageGiB < 21) {

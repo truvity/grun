@@ -156,21 +156,56 @@ describe('providers', () => {
     'fg-large': { cpu: '4096', memory: '24576', storage: 100 },
     'fg-medium': { cpu: '2048', memory: '14336', storage: 50 },
     'fg-small': { cpu: '1024', memory: '6144', storage: 50 },
+    'fg-xsmall': { cpu: '512', memory: '1024', storage: 21 },
+    'fg-medium-spot': { cpu: '2048', memory: '8192', storage: 50 },
+    'fg-xlarge': { cpu: '8192', memory: '16384', storage: 100 },
   };
 
-  it('has three Fargate ARM shapes per organisation', () => {
+  it('has six Fargate ARM shapes per organisation', () => {
     const defs = resources(s.json, 'AWS::ECS::TaskDefinition');
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(12);
     for (const [id, d] of defs) {
       const p = d.Properties;
       expect(p.RuntimePlatform.CpuArchitecture, id).toBe('ARM64');
       expect(p.RequiresCompatibilities).toEqual(['FARGATE']);
-      const shape = Object.keys(expected).find((k) => id.includes(k.replace('-', '')));
+      // the construct id is the label without its dashes: fgmedium is not fgmediumspot
+      const shape = Object.keys(expected).find((k) => /^(acme|widgets)/.test(id) && id.replace(/^(acme|widgets)/, '').startsWith(`${k.replace(/-/g, '')}task`));
       expect(shape, id).toBeDefined();
       expect(p.Cpu).toBe(expected[shape!].cpu);
       expect(p.Memory).toBe(expected[shape!].memory);
       expect(p.EphemeralStorage.SizeInGiB).toBe(expected[shape!].storage);
     }
+  });
+
+  it('runs only the Spot shapes on Fargate Spot, and keeps the others on demand', () => {
+    const capacity = (json: any): Record<string, string> => {
+      const all = JSON.stringify(json);
+      const found: Record<string, string> = {};
+      for (const m of all.matchAll(/\\"provider\\":\\"grun-example\/([a-z]+\/[a-z-]+)\\".*?\\"capacityProvider\\":\\"(FARGATE(?:_SPOT)?)\\"/g)) found[m[1]] = m[2];
+      return found;
+    };
+    const got = capacity(s.json);
+    expect(Object.keys(got).sort()).toEqual(
+      ['acme', 'widgets'].flatMap((o) => ['fg-large', 'fg-medium', 'fg-medium-spot', 'fg-small', 'fg-xlarge', 'fg-xsmall'].map((l) => `${o}/${l}`)).sort(),
+    );
+    for (const [k, v] of Object.entries(got)) expect(v, k).toBe(k.endsWith('-spot') ? 'FARGATE_SPOT' : 'FARGATE');
+    // The cluster has both capacity providers (the shared cluster serves every shape).
+    expect(JSON.stringify(resources(s.json, 'AWS::ECS::ClusterCapacityProviderAssociations'))).toContain('FARGATE_SPOT');
+    // A spot flag in the file reaches the provider, and a warm pool on a Spot shape is refused.
+    const t = synth((c) => {
+      c.shapes = [
+        { label: 'fg-a', vcpu: 1, memoryGiB: 4 },
+        { label: 'fg-b', vcpu: 1, memoryGiB: 4, spot: true },
+      ];
+      c.warm = undefined;
+    });
+    expect(capacity(t.json)).toEqual({ 'acme/fg-a': 'FARGATE', 'acme/fg-b': 'FARGATE_SPOT', 'widgets/fg-a': 'FARGATE', 'widgets/fg-b': 'FARGATE_SPOT' });
+    expect(() =>
+      synth((c) => {
+        c.shapes = [{ label: 'fg-b', vcpu: 1, memoryGiB: 4, spot: true }];
+        c.warm = { pools: [{ shape: 'fg-b', count: 1 }] };
+      }),
+    ).toThrow(/warm.pools: fg-b is a Spot shape/);
   });
 
   it('uses no EC2, no CodeBuild provider and no Lambda provider', () => {
@@ -301,10 +336,10 @@ describe('providers', () => {
 
   it('keeps the runner tasks\' log groups for runner.logRetentionDays, everything else for logRetentionDays', () => {
     const groups = resources(s.json, 'AWS::Logs::LogGroup');
-    const tasks = groups.filter(([id]) => /fg(large|medium|small)logs/.test(id));
-    expect(tasks).toHaveLength(6);
+    const tasks = groups.filter(([id]) => /fg(large|medium|small|xsmall|mediumspot|xlarge)logs/.test(id));
+    expect(tasks).toHaveLength(12);
     for (const [id, g] of tasks) expect(g.Properties.RetentionInDays, id).toBe(1);
-    const rest = groups.filter(([id]) => !/fg(large|medium|small)logs/.test(id));
+    const rest = groups.filter(([id]) => !/fg(large|medium|small|xsmall|mediumspot|xlarge)logs/.test(id));
     expect(rest.length).toBeGreaterThan(0);
     for (const [id, g] of rest) expect(g.Properties.RetentionInDays, id).toBe(30);
     // Absent, the tasks keep what everything keeps.
@@ -556,7 +591,7 @@ describe('selector, cap and budget', () => {
     const env = fn(/Routes a job/).Environment.Variables;
     expect(env.MAX_CONCURRENT_TASKS).toBe('20');
     expect(env.ON_EXCEED).toBe('skip');
-    expect(env.SHAPE_LABELS).toBe('fg-small,fg-medium,fg-large');
+    expect(env.SHAPE_LABELS).toBe('fg-xsmall,fg-small,fg-medium-spot,fg-medium,fg-large,fg-xlarge');
     expect(text(env.CLUSTER_ARN)).toContain('Cluster');
   });
 
@@ -660,13 +695,13 @@ describe('cost tags', () => {
 
   it('tags every task definition with its organisation, the component and the environment', () => {
     const defs = resources(s.json, 'AWS::ECS::TaskDefinition');
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(12);
     for (const [id, d] of defs) {
       const org = id.startsWith('acme') ? 'acme' : 'widgets';
       expect(tagsOf(d), id).toMatchObject({ company: org, component: 'ci', environment: 'example' });
     }
-    expect(defs.filter(([id]) => id.startsWith('acme'))).toHaveLength(3);
-    expect(defs.filter(([id]) => id.startsWith('widgets'))).toHaveLength(3);
+    expect(defs.filter(([id]) => id.startsWith('acme'))).toHaveLength(6);
+    expect(defs.filter(([id]) => id.startsWith('widgets'))).toHaveLength(6);
   });
 
   it('drops the old Project and GrunEnv tags', () => {

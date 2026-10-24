@@ -125,7 +125,7 @@ export class OrgRunners extends Construct {
         cpu: Math.round(shape.vcpu * 1024),
         memoryLimitMiB: Math.round(shape.memoryGiB * 1024),
         ephemeralStorageGiB: shape.ephemeralStorageGiB ?? 50,
-        spot: false,
+        spot: shape.spot ?? false,
         logRetention: taskLogRetention,
         // The task definition carries the tag too and the state machine
         // propagates it (PropagateTags), but the tag here rides on RunTask
