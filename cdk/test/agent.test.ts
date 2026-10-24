@@ -6,7 +6,10 @@ import {
   DiagTail,
   benign,
   Peaks,
+  cgroupCpuNs,
+  diskUsage,
   eventRecord,
+  jobDisplayName,
   jobOf,
   kv,
   logsBody,
@@ -164,7 +167,7 @@ describe('grun-agent: what it reports', () => {
 
   it('prints one notice line with the shape, the peaks and the share of the task', () => {
     expect(noticeLine(x)).toBe(
-      '::notice title=grun peak::fg-medium 2 vCPU / 4096 MiB: memory 1000 MiB peak (24%) (1100 MiB with page cache), CPU 1.5 cores peak (75%), 1.5 average, 125 s, 2 samples',
+      '::notice title=grun peak::fg-medium 2 vCPU / 4096 MiB: memory 1000 MiB peak (24%) (1100 MiB with page cache), CPU 1.5 cores peak (75%), 1.5 average, 125 s, 2 samples, 0 s at the CPU cap (>= 95%), disk 0 MiB used at peak (0 at start, 0 MiB volume)',
     );
   });
 
@@ -214,10 +217,124 @@ describe('grun-agent: what it reports', () => {
       'grun_job_duration_seconds',
       'grun_task_vcpu',
       'grun_task_memory_bytes',
+      'grun_job_cpu_at_cap_seconds',
+      'grun_job_disk_peak_bytes',
     ]);
     const labels = m[0].gauge.dataPoints[0].attributes.map((a) => a.key);
     expect(labels).toEqual(['tier', 'org', 'size', 'repo', 'workflow', 'workflow_job']);
     expect(m[0].gauge.dataPoints[0].asDouble).toBe(1000 * MIB);
+  });
+});
+
+describe('grun-agent: time at the CPU cap, disk, the job name', () => {
+  const at = (iso: string, cpuNs: number) =>
+    parseStats({ a: { read: iso, memory_stats: { usage: 1 }, cpu_stats: { cpu_usage: { total_usage: cpuNs } } } })!;
+
+  it('counts the seconds whose CPU rate reached 95% of the task\'s vCPU', () => {
+    const p = new Peaks(2); // a 2 vCPU task: the cap is 1.9 cores
+    p.add(at('2026-10-24T10:00:00Z', 0), 0);
+    p.add(at('2026-10-24T10:00:05Z', 10e9), 0); // 2.0 cores for 5 s: at the cap
+    p.add(at('2026-10-24T10:00:10Z', 19.5e9), 0); // 1.9 cores: exactly 95%, at the cap
+    p.add(at('2026-10-24T10:00:15Z', 24e9), 0); // 0.9 cores: not
+    p.add(at('2026-10-24T10:00:25Z', 24e9), 0); // idle for 10 s
+    expect(p.cpuAtCapS).toBe(10);
+    expect(p.cpuMeasuredS).toBe(25);
+    const x = summarise(settings({}), jobOf({}), 't', { cpu: 2, memoryMiB: 4096 }, p, 0, 25_000);
+    expect(x).toMatchObject({ cpuAtCapS: 10, cpuMeasuredS: 25, cpuAtCapFraction: 0.4, cpuSource: 'task-stats' });
+  });
+
+  it('counts nothing at the cap when the task\'s vCPU is unknown, and a cached reading adds no time', () => {
+    const p = new Peaks();
+    p.add(at('2026-10-24T10:00:00Z', 0), 0);
+    p.add(at('2026-10-24T10:00:00Z', 0), 1000);
+    p.add(at('2026-10-24T10:00:05Z', 50e9), 0);
+    expect(p.cpuAtCapS).toBe(0);
+    expect(p.cpuMeasuredS).toBe(5);
+  });
+
+  it('falls back on the container\'s cgroup for a job too short for two distinct task readings', () => {
+    const p = new Peaks(2);
+    p.add(at('2026-10-24T10:00:00Z', 1e9), 0);
+    p.add(at('2026-10-24T10:00:00Z', 1e9), 3000); // the same cached reading at the end of a 3 s job
+    expect(p.cpuSource()).toBe('none');
+    p.addCgroup(40e9, 1_000);
+    p.addCgroup(44e9, 3_000); // 4 s of CPU in 2 s
+    expect(p.cpuSource()).toBe('cgroup');
+    expect(p.cpuAverage()).toBeCloseTo(2);
+    expect(p.cpuPeakCores()).toBeCloseTo(2);
+    const x = summarise(settings({}), jobOf({}), 't', { cpu: 2, memoryMiB: 4096 }, p, 0, 3000);
+    expect(x).toMatchObject({ peakCpuCores: 2, avgCpuCores: 2, cpuSource: 'cgroup' });
+  });
+
+  it('keeps the task stats where they have a rate', () => {
+    const p = new Peaks(4);
+    p.add(at('2026-10-24T10:00:00Z', 0), 0);
+    p.add(at('2026-10-24T10:00:05Z', 5e9), 0);
+    p.addCgroup(0, 0);
+    p.addCgroup(1e9, 5000);
+    expect(p.cpuSource()).toBe('task-stats');
+    expect(p.cpuAverage()).toBeCloseTo(1);
+  });
+
+  it('reads the CPU time of a cgroup v2 or v1 directory', () => {
+    const v2 = fs.mkdtempSync(path.join(os.tmpdir(), 'cg2-'));
+    fs.writeFileSync(path.join(v2, 'cpu.stat'), 'usage_usec 1500000\nuser_usec 1\nsystem_usec 2\n');
+    expect(cgroupCpuNs(v2)).toBe(1.5e9);
+    const v1 = fs.mkdtempSync(path.join(os.tmpdir(), 'cg1-'));
+    fs.mkdirSync(path.join(v1, 'cpuacct'));
+    fs.writeFileSync(path.join(v1, 'cpuacct', 'cpuacct.usage'), '2500000000\n');
+    expect(cgroupCpuNs(v1)).toBe(2.5e9);
+    expect(cgroupCpuNs('/nonexistent/grun')).toBeUndefined();
+  });
+
+  it('keeps the first, the highest and the size of the used disk', () => {
+    const p = new Peaks();
+    p.addDisk(3000 * MIB, 50_000 * MIB);
+    p.addDisk(9000 * MIB, 50_000 * MIB);
+    p.addDisk(4000 * MIB, 50_000 * MIB);
+    p.addDisk(-1, 0); // a bad reading changes nothing
+    const x = summarise(settings({}), jobOf({}), 't', { cpu: 2, memoryMiB: 4096 }, p, 0, 1000);
+    expect(x).toMatchObject({ peakDiskMiB: 9000, diskStartMiB: 3000, diskTotalMiB: 50_000 });
+    const u = diskUsage(os.tmpdir());
+    expect(u?.total).toBeGreaterThan(0);
+    expect(u?.used).toBeLessThanOrEqual(u!.total);
+    expect(diskUsage('/nonexistent/grun')).toBeUndefined();
+  });
+
+  it('reads the job\'s display name, matrix values included, from the newest Worker log', () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'grun-diag-'));
+    const message = JSON.stringify({ steps: [{ displayName: 'x' }], jobDisplayName: 'test (go, "1.27")', jobId: 'abc' }, null, 2);
+    fs.writeFileSync(path.join(d, 'Worker_20261024-100000-utc.log'), `[2026-10-24 10:00:00Z INFO Worker] Job message:\n ${message}\n`);
+    expect(jobDisplayName(d)).toBe('test (go, "1.27")');
+    expect(jobDisplayName('/nonexistent/grun')).toBeUndefined();
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'grun-diag-'));
+    fs.writeFileSync(path.join(empty, 'Worker_1.log'), '[2026-10-24 10:00:00Z INFO Worker] Worker started\n');
+    expect(jobDisplayName(empty)).toBeUndefined();
+  });
+
+  it('adds the new fields to the event and keeps the old ones', () => {
+    const p = new Peaks(2);
+    p.add(at('2026-10-24T10:00:00Z', 0), 0);
+    p.add(at('2026-10-24T10:00:10Z', 20e9), 0);
+    p.addDisk(1000 * MIB, 20_000 * MIB);
+    const x = summarise(settings({}), jobOf({}), 't', { cpu: 2, memoryMiB: 4096 }, p, 0, 10_000, 'recipes / ci-verify (a, b)');
+    const ev = Object.fromEntries(eventRecord(x).attributes.map((a) => [a.key, Object.values(a.value)[0]]));
+    expect(ev).toMatchObject({
+      event: 'grun.job.peak',
+      // whole numbers travel as OTLP intValue (a string)
+      peak_cpu_cores: '2',
+      avg_cpu_cores: '2',
+      cpu_at_cap_s: '10',
+      cpu_at_cap_fraction: '1',
+      cpu_measured_s: '10',
+      cpu_source: 'task-stats',
+      peak_disk_mib: '1000',
+      disk_start_mib: '1000',
+      disk_total_mib: '20000',
+      job_name: 'recipes / ci-verify (a, b)',
+    });
+    const without = Object.fromEntries(eventRecord(summarise(settings({}), jobOf({}), 't', { cpu: 2, memoryMiB: 4096 }, p, 0, 10_000)).attributes.map((a) => [a.key, 1]));
+    expect(without).not.toHaveProperty('job_name');
   });
 });
 

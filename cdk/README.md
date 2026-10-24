@@ -103,7 +103,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerImage.cloudWatchAgent` | true | install the CloudWatch agent |
 | `runnerImage.extraCertificates.path` / `.pem` | | private CA to trust: a file (relative to the configuration file) or the PEM itself. Also sets `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt` on every task, since Node does not read the system store |
 | `runnerImage.extraCertificates.name` | `private-ca` | |
-| `shapes[]` | the three below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (21 to 200) |
+| `shapes[]` | the six below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (21 to 200), `spot` (false: on-demand; true: Fargate Spot, see "Fargate Spot") |
 | `requireSelfHostedLabel` | false | false lets a job say `runs-on: fg-large` alone |
 | `logRetentionDays` | 30 | every log group (the runner tasks' own: see `runner.logRetentionDays`) |
 | `runnerEnvironment.goproxy` | | `CI_RUNNER_GOPROXY` |
@@ -154,8 +154,31 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
 
 Default shapes: `fg-large` 4 vCPU / 24 GB / 100 GiB, `fg-medium` 2 / 14 / 50,
-`fg-small` 1 / 6 / 50. Fargate takes only certain CPU and memory pairs; an
+`fg-small` 1 / 6 / 50, `fg-xsmall` 0.5 / 1 / 21, `fg-medium-spot` 2 / 8 / 50 on
+Fargate Spot and `fg-xlarge` 8 / 16 / 100. Fargate takes only certain CPU and memory pairs; an
 invalid pair fails at deploy.
+
+### Fargate Spot
+
+A shape with `spot: true` runs its tasks on the `FARGATE_SPOT` capacity provider of the
+stack's cluster (cdk-github-runners' `spot` option, ARM64 on Spot since 2024-09), at
+the Spot discount on every vCPU-hour and GB-hour. The price is the failure model:
+
+- **A Spot interruption fails the job.** ECS stops the task (two minutes' warning, which
+  the runner does not use), the runner dies and the job ends as a failure or
+  a lost-runner or shutdown-signal error. GitHub does not retry it, and the
+  requeue (`runner.requeue`) starts a runner again only for a job that is still queued
+  after its runner went away, not for a job that was running. The way to recover is a
+  rerun of the job.
+- So Spot belongs where a rerun is cheap and nobody is waiting: the preview tier, and
+  there first the fleet jobs (Renovate, parity). Never a stable tier (its configuration
+  should refuse a Spot shape), never a warm pool (the config check refuses it).
+- A job picks Spot by its label alone (`fg-medium-spot`); the provider selector treats
+  it as any other shape. The task role, the environment and grun-agent are the same
+  as the on-demand shape's, and the role's name (`<stack>-<org>-fg-medium-spot-task`) must
+  be admitted by whoever runs the telemetry issuer like any other.
+- The agent's records carry the shape in `size`, so Spot and on-demand jobs compare by
+  that label.
 
 ### Runner groups and labels
 
@@ -200,10 +223,26 @@ go to `~/.grun-agent/agent.log` of the runner user in the task.
   and `CRIT` records with their continuation lines (a stack trace), at most 1000 per task.
   Records written before the job started are included; a task that never gets a job, and
   what the runner writes after the job-completed hook, are not.
+- **Time at the CPU cap, the disk, the job's name** (added 2026-10-24; fields are only
+  ever added to the record, never renamed). The CPU rate over each sampling interval is
+  compared with the task's vCPU: the seconds of intervals at 95 % or more of it are
+  `cpu_at_cap_s`, out of `cpu_measured_s` seconds measured (`cpu_at_cap_fraction` is
+  their ratio). A job shorter than the task stats' own refresh (about 6 s) would report
+  no CPU at all, because the endpoint serves cached readings; the agent then takes the
+  runner container's cgroup CPU time (`cpu.stat` or `cpuacct`) at the start and at the
+  end and reports its average as both figures, `cpu_source=cgroup` (otherwise
+  `task-stats`, or `none`). Disk is `statfs` of `/` (`GRUN_DISK_PATH` changes it): the
+  used bytes at the first reading (`disk_start_mib`: the image and its layers), at the
+  peak (`peak_disk_mib`) and the size of the volume (`disk_total_mib`); a job's own use is
+  the difference. The job's display name with its matrix values
+  (`recipes / ci-verify`, `test (go, 1.27)`) is `job_name`; `GITHUB_JOB` (the job id) stays
+  `job` in the resource. The name is read from the job message the runner's Worker
+  traces into `_diag/Worker_*.log`, and the field is absent when it is not there.
 - **Telemetry** (`telemetry`): the records as OTLP logs every minute, and at the end the
   peaks as gauges (`grun_job_memory_peak_bytes`, `grun_job_memory_usage_peak_bytes`,
   `grun_job_cpu_peak_cores`, `grun_job_cpu_average_cores`, `grun_job_duration_seconds`,
-  `grun_task_vcpu`, `grun_task_memory_bytes`; labels `tier`, `org`, `size`, `repo`,
+  `grun_task_vcpu`, `grun_task_memory_bytes`, `grun_job_cpu_at_cap_seconds`,
+  `grun_job_disk_peak_bytes`; labels `tier`, `org`, `size`, `repo`,
   `workflow`, `workflow_job`) and one log event (`event=grun.job.peak` with the numbers).
   Every log carries the resource `service.name=grun`, `tier`, `org`, `size`, `repo`,
   `workflow`, `job`, `run_id`, `run_attempt`, `runner`, `task_id`. The token: the task

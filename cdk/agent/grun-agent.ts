@@ -7,7 +7,9 @@
 //
 //   daemon   started detached by the job-started hook. Every few seconds it reads the
 //            ECS task metadata endpoint's task stats and keeps the job's peaks (memory
-//            and CPU of the whole task). Every half minute it reads what the runner
+//            and CPU of the whole task, the time spent at the CPU cap) and the used
+//            ephemeral disk, and it reads the job's display name (the matrix values
+//            included) from the runner's Worker log. Every half minute it reads what the runner
 //            appended to its diagnostic logs (_diag/Runner_*.log, Worker_*.log) and
 //            keeps the warning, error and critical records. With telemetry configured
 //            it ships those as OTLP logs, and at the end the job's peaks as OTLP
@@ -135,14 +137,30 @@ export function parseStats(stats: unknown): Sample | undefined {
   return seen ? out : undefined;
 }
 
+/** A CPU interval counts as at the cap from this share of the task's vCPU (SZ11). */
+export const CPU_CAP_SHARE = 0.95;
+
 export class Peaks {
   samples = 0;
   usage = 0;
   workingSet = 0;
   maxUsage = 0;
   cpuPeak = 0;
+  /** Seconds of the measured CPU intervals whose rate was at least CPU_CAP_SHARE of capCores. */
+  cpuAtCapS = 0;
+  /** Seconds the CPU rate was measured over: the denominator of the share at the cap. */
+  cpuMeasuredS = 0;
+  /** Used bytes of the watched filesystem: the highest reading, the first one, and its size. */
+  diskPeak = 0;
+  diskFirst?: number;
+  diskTotal = 0;
   private first?: { t: number; cpuNs: number };
   private last?: { t: number; cpuNs: number };
+  private cgroupFirst?: { t: number; cpuNs: number };
+  private cgroupLast?: { t: number; cpuNs: number };
+
+  /** @param capCores the task's vCPU; 0 when unknown, and no time is then counted at the cap. */
+  constructor(public capCores = 0) {}
 
   add(s: Sample, tMs: number): void {
     this.samples++;
@@ -156,16 +174,126 @@ export class Peaks {
     if (this.last && s.cpuNs >= this.last.cpuNs) {
       const cores = (s.cpuNs - this.last.cpuNs) / ((t - this.last.t) * 1e6);
       this.cpuPeak = Math.max(this.cpuPeak, cores);
+      const seconds = (t - this.last.t) / 1000;
+      this.cpuMeasuredS += seconds;
+      if (this.capCores > 0 && cores >= CPU_CAP_SHARE * this.capCores) this.cpuAtCapS += seconds;
     }
     if (!this.first) this.first = { t, cpuNs: s.cpuNs };
     this.last = { t, cpuNs: s.cpuNs };
   }
 
-  /** Average cores between the first and the last sample. */
-  cpuAverage(): number {
+  /** The used bytes of the ephemeral disk (total: its size). */
+  addDisk(used: number, total: number): void {
+    if (!(used >= 0) || !(total > 0)) return;
+    this.diskFirst ??= used;
+    this.diskPeak = Math.max(this.diskPeak, used);
+    this.diskTotal = total;
+  }
+
+  /**
+   * The runner container's own CPU time from its cgroup: a second source for a job that
+   * ends before the task stats (cached for several seconds) show two distinct readings.
+   */
+  addCgroup(cpuNs: number, tMs: number): void {
+    this.cgroupFirst ??= { t: tMs, cpuNs };
+    this.cgroupLast = { t: tMs, cpuNs };
+  }
+
+  private statsAverage(): number {
     if (!this.first || !this.last || this.last.t <= this.first.t) return 0;
     return (this.last.cpuNs - this.first.cpuNs) / ((this.last.t - this.first.t) * 1e6);
   }
+
+  private cgroupAverage(): number {
+    if (!this.cgroupFirst || !this.cgroupLast || this.cgroupLast.t <= this.cgroupFirst.t) return 0;
+    return (this.cgroupLast.cpuNs - this.cgroupFirst.cpuNs) / ((this.cgroupLast.t - this.cgroupFirst.t) * 1e6);
+  }
+
+  /** Where the CPU figures come from: the task stats, the cgroup (a job too short for them), or nowhere. */
+  cpuSource(): 'task-stats' | 'cgroup' | 'none' {
+    if (this.statsAverage() > 0 || this.cpuPeak > 0) return 'task-stats';
+    return this.cgroupAverage() > 0 ? 'cgroup' : 'none';
+  }
+
+  /** Average cores between the first and the last sample. */
+  cpuAverage(): number {
+    return this.cpuSource() === 'cgroup' ? this.cgroupAverage() : this.statsAverage();
+  }
+
+  /** The highest rate over one sampling interval; for a job too short for one, its average. */
+  cpuPeakCores(): number {
+    return this.cpuSource() === 'cgroup' ? this.cgroupAverage() : this.cpuPeak;
+  }
+}
+
+/**
+ * CPU time of this container's cgroup, nanoseconds: cgroup v2 `cpu.stat` (usage_usec) or
+ * the v1 cpuacct counter. Undefined where neither is readable.
+ */
+export function cgroupCpuNs(root = '/sys/fs/cgroup'): number | undefined {
+  try {
+    const m = /^usage_usec (\d+)$/m.exec(fs.readFileSync(path.join(root, 'cpu.stat'), 'utf8'));
+    if (m) return Number(m[1]) * 1000;
+  } catch {
+    /* not v2 */
+  }
+  for (const rel of ['cpuacct/cpuacct.usage', 'cpu,cpuacct/cpuacct.usage', 'cpu/cpuacct.usage']) {
+    try {
+      const v = Number(fs.readFileSync(path.join(root, rel), 'utf8').trim());
+      if (Number.isFinite(v) && v > 0) return v;
+    } catch {
+      /* next */
+    }
+  }
+  return undefined;
+}
+
+/** Used and total bytes of the filesystem under `dir` (the task's ephemeral storage for `/`). */
+export function diskUsage(dir: string): { used: number; total: number } | undefined {
+  try {
+    const st = fs.statfsSync(dir);
+    const total = Number(st.blocks) * Number(st.bsize);
+    const used = (Number(st.blocks) - Number(st.bfree)) * Number(st.bsize);
+    return total > 0 ? { used, total } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const JOB_NAME = /"jobDisplayName"\s*:\s*"((?:[^"\\]|\\.)*)"/i;
+const MAX_JOB_NAME = 512;
+const WORKER_HEAD_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The job's display name, matrix values included ("recipes / ci-verify", "test (go, 1.27)"):
+ * GITHUB_JOB is only the job's id, and the name is in no environment variable. The runner's
+ * Worker traces the job message at the start of the job, as indented JSON, into
+ * _diag/Worker_*.log; the newest log is this job's. Undefined when it is not (yet) there.
+ */
+export function jobDisplayName(diagDir: string): string | undefined {
+  try {
+    const logs = fs
+      .readdirSync(diagDir)
+      .filter((f) => /^Worker_.*\.log$/.test(f))
+      .map((f) => ({ f, m: fs.statSync(path.join(diagDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const { f } of logs.slice(0, 1)) {
+      const fd = fs.openSync(path.join(diagDir, f), 'r');
+      try {
+        const buf = Buffer.alloc(WORKER_HEAD_BYTES);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        const m = JOB_NAME.exec(buf.subarray(0, n).toString('utf8'));
+        if (!m) return undefined;
+        const name = (JSON.parse(`"${m[1]}"`) as string).trim().slice(0, MAX_JOB_NAME);
+        return name || undefined;
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } catch {
+    /* fail-open */
+  }
+  return undefined;
 }
 
 // ---- the runner's diagnostic logs
@@ -365,12 +493,33 @@ export interface Summary {
   maxUsageMiB: number;
   peakCpuCores: number;
   avgCpuCores: number;
+  /** Where the CPU figures were read: the task stats, the container's cgroup, or nowhere. */
+  cpuSource: 'task-stats' | 'cgroup' | 'none';
+  /** Seconds at or above CPU_CAP_SHARE of the task's vCPU, over cpuMeasuredS seconds of measured intervals. */
+  cpuAtCapS: number;
+  cpuMeasuredS: number;
+  cpuAtCapFraction: number;
+  /** Used ephemeral disk: the highest reading, the first one (the image and its layers), the size of the volume. */
+  peakDiskMiB: number;
+  diskStartMiB: number;
+  diskTotalMiB: number;
+  /** The job's display name with its matrix values; absent when the runner's log did not give it. */
+  jobName?: string;
 }
 
 const MIB = 1024 * 1024;
 const round = (x: number, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
 
-export function summarise(s: Settings, job: Job, taskId: string, limits: { cpu: number; memoryMiB: number }, peaks: Peaks, startedMs: number, endMs: number): Summary {
+export function summarise(
+  s: Settings,
+  job: Job,
+  taskId: string,
+  limits: { cpu: number; memoryMiB: number },
+  peaks: Peaks,
+  startedMs: number,
+  endMs: number,
+  jobName?: string,
+): Summary {
   return {
     tier: s.tier,
     org: s.org,
@@ -384,8 +533,16 @@ export function summarise(s: Settings, job: Job, taskId: string, limits: { cpu: 
     peakWorkingSetMiB: Math.round(peaks.workingSet / MIB),
     peakUsageMiB: Math.round(peaks.usage / MIB),
     maxUsageMiB: Math.round(peaks.maxUsage / MIB),
-    peakCpuCores: round(peaks.cpuPeak),
+    peakCpuCores: round(peaks.cpuPeakCores()),
     avgCpuCores: round(peaks.cpuAverage()),
+    cpuSource: peaks.cpuSource(),
+    cpuAtCapS: round(peaks.cpuAtCapS, 1),
+    cpuMeasuredS: round(peaks.cpuMeasuredS, 1),
+    cpuAtCapFraction: peaks.cpuMeasuredS > 0 ? round(peaks.cpuAtCapS / peaks.cpuMeasuredS, 3) : 0,
+    peakDiskMiB: Math.round(peaks.diskPeak / MIB),
+    diskStartMiB: Math.round((peaks.diskFirst ?? 0) / MIB),
+    diskTotalMiB: Math.round(peaks.diskTotal / MIB),
+    ...(jobName ? { jobName } : {}),
   };
 }
 
@@ -396,7 +553,9 @@ export function noticeLine(x: Summary): string {
   return (
     `::notice title=grun peak::${shape}: memory ${x.peakWorkingSetMiB} MiB peak${pct(x.peakWorkingSetMiB, x.taskMemoryMiB)}` +
     ` (${x.peakUsageMiB} MiB with page cache), CPU ${x.peakCpuCores} cores peak${pct(x.peakCpuCores, x.taskVcpu)}` +
-    `, ${x.avgCpuCores} average, ${x.durationS} s, ${x.samples} samples`
+    `, ${x.avgCpuCores} average, ${x.durationS} s, ${x.samples} samples` +
+    `, ${x.cpuAtCapS} s at the CPU cap (>= ${Math.round(100 * CPU_CAP_SHARE)}%)` +
+    `, disk ${x.peakDiskMiB} MiB used at peak (${x.diskStartMiB} at start, ${x.diskTotalMiB} MiB volume)`
   );
 }
 
@@ -416,6 +575,15 @@ export function eventRecord(x: Summary) {
       kv('max_usage_mib', x.maxUsageMiB),
       kv('peak_cpu_cores', x.peakCpuCores),
       kv('avg_cpu_cores', x.avgCpuCores),
+      // Added with the runner-sizing decisions (SZ11); every field above is unchanged.
+      kv('cpu_source', x.cpuSource),
+      kv('cpu_at_cap_s', x.cpuAtCapS),
+      kv('cpu_measured_s', x.cpuMeasuredS),
+      kv('cpu_at_cap_fraction', x.cpuAtCapFraction),
+      kv('peak_disk_mib', x.peakDiskMiB),
+      kv('disk_start_mib', x.diskStartMiB),
+      kv('disk_total_mib', x.diskTotalMiB),
+      ...(x.jobName ? [kv('job_name', x.jobName)] : []),
     ],
   };
 }
@@ -446,6 +614,8 @@ export function metricsBody(x: Summary) {
               gauge('grun_job_duration_seconds', 'Duration of the job, from the started to the completed hook', x.durationS),
               gauge('grun_task_vcpu', 'vCPU of the job\'s task', x.taskVcpu),
               gauge('grun_task_memory_bytes', 'Memory of the job\'s task', x.taskMemoryMiB * MIB),
+              gauge('grun_job_cpu_at_cap_seconds', 'Seconds the job\'s task spent at or above 95% of its vCPU', x.cpuAtCapS),
+              gauge('grun_job_disk_peak_bytes', 'Peak used ephemeral disk of the job\'s task, the image included', x.peakDiskMiB * MIB),
             ],
           },
         ],
@@ -563,6 +733,7 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
   const started = Date.now();
   const peaks = new Peaks();
   const diag = new DiagTail(s.diagDir);
+  let jobName = jobDisplayName(s.diagDir);
   const pending: DiagRecord[] = [];
   let dropped = 0;
   let limits = { cpu: 0, memoryMiB: 0 };
@@ -573,6 +744,7 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
     try {
       const task = await getJson(`${s.metadataUri}/task`);
       limits = { cpu: Number(task?.Limits?.CPU) || 0, memoryMiB: Number(task?.Limits?.Memory) || 0 };
+      peaks.capCores = limits.cpu;
       taskId = String(task?.TaskARN ?? '').split('/').pop() ?? '';
     } catch (e) {
       log(`task metadata: ${String(e)}`);
@@ -584,7 +756,10 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
   // Fetch the first token early: the last export at job end then needs only the POSTs.
   tokens?.get().catch((e) => log(`token: ${String(e)}`));
 
+  const diskDir = env.GRUN_DISK_PATH || '/';
   const sample = async () => {
+    const d = diskUsage(diskDir);
+    if (d) peaks.addDisk(d.used, d.total);
     if (!s.metadataUri) return;
     try {
       const x = parseStats(await getJson(`${s.metadataUri}/task/stats`));
@@ -616,6 +791,8 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
     }
   };
 
+  const cg = cgroupCpuNs();
+  if (cg !== undefined) peaks.addCgroup(cg, Date.now());
   await sample();
   let sampling = false;
   const sampler = setInterval(() => {
@@ -623,7 +800,11 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
     sampling = true;
     void sample().finally(() => (sampling = false));
   }, s.sampleMs);
-  const scanner = setInterval(() => scan(diag.scan()), s.scanMs);
+  const scanner = setInterval(() => {
+    scan(diag.scan());
+    // The Worker's log may not have had the job message yet when the hook started the daemon.
+    jobName ??= jobDisplayName(s.diagDir);
+  }, s.scanMs);
   let flushing = false;
   const flusher = setInterval(() => {
     if (flushing || pending.length === 0) return;
@@ -638,10 +819,14 @@ export async function daemon(env: NodeJS.ProcessEnv): Promise<void> {
     clearInterval(sampler);
     clearInterval(scanner);
     clearInterval(flusher);
+    // The last readings, taken at the end rather than at the next tick.
+    const cgEnd = cgroupCpuNs();
+    if (cgEnd !== undefined) peaks.addCgroup(cgEnd, Date.now());
     await sample();
     scan(diag.scan());
     scan(diag.close());
-    const summary = summarise(s, job, taskId, limits, peaks, started, Date.now());
+    jobName ??= jobDisplayName(s.diagDir);
+    const summary = summarise(s, job, taskId, limits, peaks, started, Date.now(), jobName);
     fs.writeFileSync(`${f.summary}.tmp`, JSON.stringify(summary));
     fs.renameSync(`${f.summary}.tmp`, f.summary);
     if (dropped > 0) log(`diag: ${dropped} records over the cap of ${MAX_RECORDS} not sent`);

@@ -27,8 +27,13 @@ Fargate ARM tasks in the public subnets of an existing VPC (no NAT), started by
 What it builds, in short:
 
 - **Providers**: `fg-large` (4 vCPU / 24 GB), `fg-medium` (2 / 14), `fg-small`
-  (1 / 6) per organisation, each with ephemeral storage sized for builds and a
-  task role per organisation whose policies come from the configuration.
+  (1 / 6), `fg-xsmall` (0.5 / 1), `fg-medium-spot` (2 / 8, on Fargate Spot) and `fg-xlarge` (8 / 16)
+  per organisation, each with ephemeral storage sized for builds and a
+  task role per organisation whose policies come from the configuration. A
+  shape on Spot (`shapes[].spot`) is a trial for jobs a rerun absorbs: **a Spot
+  interruption stops the task and fails the job, GitHub does not retry it, and
+  the requeue (`runner.requeue`) starts a runner only for a job that never got
+  one**, so such a job needs a rerun. Never use it on a stable tier.
 - **Runner image**: cdk-github-runners' CodeBuild image builder (Linux arm64)
   on top of [ci-plane](https://github.com/truvity/ci-plane)'s runner image, taken
   through the account's ECR pull-through cache, plus the runner layout, job
