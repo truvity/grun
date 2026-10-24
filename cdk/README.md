@@ -153,8 +153,8 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
 | `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
 
-Default shapes: `fg-large` 4 vCPU / 24 GB / 100 GiB, `fg-medium` 2 / 14 / 50,
-`fg-small` 1 / 6 / 50, `fg-xsmall` 0.5 / 1 / 21, `fg-medium-spot` 2 / 8 / 50 on
+Default shapes: `fg-large` 4 vCPU / 12 GB / 100 GiB, `fg-medium` 2 / 8 / 50,
+`fg-small` 1 / 4 / 50, `fg-xsmall` 0.5 / 1 / 21, `fg-medium-spot` 2 / 8 / 50 on
 Fargate Spot and `fg-xlarge` 8 / 16 / 100. Fargate takes only certain CPU and memory pairs; an
 invalid pair fails at deploy.
 
@@ -215,7 +215,7 @@ go to `~/.grun-agent/agent.log` of the runner user in the task.
   `${ECS_CONTAINER_METADATA_URI_V4}/task/stats` and keeps the task's peak memory (all
   containers, less the inactive page cache, and with it), peak CPU over one interval
   and the average. The job-completed hook prints them as one line,
-  `::notice title=grun peak::fg-medium 2 vCPU / 14336 MiB: memory 3120 MiB peak (22%) …`,
+  `::notice title=grun peak::fg-medium 2 vCPU / 8192 MiB: memory 3120 MiB peak (38%) …`,
   which is also a check-run annotation (`GET /repos/{owner}/{repo}/check-runs/{job id}/annotations`).
 - **The runner's warnings and errors.** With the trace off stdout
   (`runner.traceToStdout`), the runner still writes it to `_diag`. Every 30 seconds the

@@ -160,9 +160,9 @@ export const XLARGE_SHAPE: Shape = { label: 'fg-xlarge', vcpu: 8, memoryGiB: 16,
 
 /** The shapes the project runs with unless the file says otherwise. */
 export const DEFAULT_SHAPES: Shape[] = [
-  { label: 'fg-large', vcpu: 4, memoryGiB: 24, ephemeralStorageGiB: 100 },
-  { label: 'fg-medium', vcpu: 2, memoryGiB: 14, ephemeralStorageGiB: 50 },
-  { label: 'fg-small', vcpu: 1, memoryGiB: 6, ephemeralStorageGiB: 50 },
+  { label: 'fg-large', vcpu: 4, memoryGiB: 12, ephemeralStorageGiB: 100 },
+  { label: 'fg-medium', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 50 },
+  { label: 'fg-small', vcpu: 1, memoryGiB: 4, ephemeralStorageGiB: 50 },
   // The sizes of the runner-sizing decisions (2026-10-24, SZ1): an extra-small one for the
   // trivial jobs (the ephemeral storage is Fargate's minimum) and a Spot twin of the new
   // medium (SZ10) for the trial that starts with the Renovate fleet jobs.
