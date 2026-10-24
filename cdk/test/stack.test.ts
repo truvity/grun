@@ -153,9 +153,9 @@ describe('network', () => {
 
 describe('providers', () => {
   const expected: Record<string, { cpu: string; memory: string; storage: number }> = {
-    'fg-large': { cpu: '4096', memory: '24576', storage: 100 },
-    'fg-medium': { cpu: '2048', memory: '14336', storage: 50 },
-    'fg-small': { cpu: '1024', memory: '6144', storage: 50 },
+    'fg-large': { cpu: '4096', memory: '12288', storage: 100 },
+    'fg-medium': { cpu: '2048', memory: '8192', storage: 50 },
+    'fg-small': { cpu: '1024', memory: '4096', storage: 50 },
     'fg-xsmall': { cpu: '512', memory: '1024', storage: 21 },
     'fg-medium-spot': { cpu: '2048', memory: '8192', storage: 50 },
     'fg-xlarge': { cpu: '8192', memory: '16384', storage: 100 },
@@ -591,7 +591,7 @@ describe('selector, cap and budget', () => {
     const env = fn(/Routes a job/).Environment.Variables;
     expect(env.MAX_CONCURRENT_TASKS).toBe('20');
     expect(env.ON_EXCEED).toBe('skip');
-    expect(env.SHAPE_LABELS).toBe('fg-xsmall,fg-small,fg-medium-spot,fg-medium,fg-large,fg-xlarge');
+    expect(env.SHAPE_LABELS).toBe('fg-xsmall,fg-small,fg-medium,fg-medium-spot,fg-large,fg-xlarge');
     expect(text(env.CLUSTER_ARN)).toContain('Cluster');
   });
 

@@ -26,8 +26,8 @@ Fargate ARM tasks in the public subnets of an existing VPC (no NAT), started by
 
 What it builds, in short:
 
-- **Providers**: `fg-large` (4 vCPU / 24 GB), `fg-medium` (2 / 14), `fg-small`
-  (1 / 6), `fg-xsmall` (0.5 / 1), `fg-medium-spot` (2 / 8, on Fargate Spot) and `fg-xlarge` (8 / 16)
+- **Providers**: `fg-large` (4 vCPU / 12 GB), `fg-medium` (2 / 8), `fg-small`
+  (1 / 4), `fg-xsmall` (0.5 / 1), `fg-medium-spot` (2 / 8, on Fargate Spot) and `fg-xlarge` (8 / 16)
   per organisation, each with ephemeral storage sized for builds and a
   task role per organisation whose policies come from the configuration. A
   shape on Spot (`shapes[].spot`) is a trial for jobs a rerun absorbs: **a Spot

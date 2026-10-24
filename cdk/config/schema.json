@@ -122,7 +122,7 @@
       }
     },
     "shapes": {
-      "description": "Runner sizes. One Fargate ARM provider per shape and organisation; the label is what a job puts in runs-on. Default: fg-large 4 vCPU/24 GB, fg-medium 2/14, fg-small 1/6, fg-xsmall 0.5/1, and fg-medium-spot 2/8 on Fargate Spot, fg-xlarge 8/16.",
+      "description": "Runner sizes. One Fargate ARM provider per shape and organisation; the label is what a job puts in runs-on. Default: fg-large 4 vCPU/12 GB, fg-medium 2/8, fg-small 1/4, fg-xsmall 0.5/1, and fg-medium-spot 2/8 on Fargate Spot, fg-xlarge 8/16.",
       "type": "array",
       "minItems": 1,
       "items": {
