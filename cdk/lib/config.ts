@@ -16,6 +16,11 @@ export interface Shape {
   label: string;
   vcpu: number;
   memoryGiB: number;
+  /**
+   * Ephemeral storage in GiB: 20 (Fargate's default, which is included in the price: the
+   * setting is left out of the task definition) or 21 to 200 (each GiB above 20 is billed).
+   * Absent: 50.
+   */
   ephemeralStorageGiB?: number;
   /**
    * Run the tasks on the FARGATE_SPOT capacity provider. A Spot interruption stops the
@@ -156,20 +161,27 @@ export interface GrunConfig {
  * sizing experiment. One value: change the size here. Fargate takes 16 to 60 GB for 8 vCPU
  * in 4 GB steps.
  */
-export const XLARGE_SHAPE: Shape = { label: 'fg-xlarge', vcpu: 8, memoryGiB: 16, ephemeralStorageGiB: 100 };
+export const XLARGE_SHAPE: Shape = { label: 'fg-xlarge', vcpu: 8, memoryGiB: 16, ephemeralStorageGiB: 30 };
 
 /** The shapes the project runs with unless the file says otherwise. */
 export const DEFAULT_SHAPES: Shape[] = [
-  { label: 'fg-large', vcpu: 4, memoryGiB: 12, ephemeralStorageGiB: 100 },
-  { label: 'fg-medium', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 50 },
-  { label: 'fg-small', vcpu: 1, memoryGiB: 4, ephemeralStorageGiB: 50 },
+  { label: 'fg-large', vcpu: 4, memoryGiB: 12, ephemeralStorageGiB: 30 },
+  { label: 'fg-medium', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 20 },
+  { label: 'fg-small', vcpu: 1, memoryGiB: 4, ephemeralStorageGiB: 20 },
   // The sizes of the runner-sizing decisions (2026-10-24, SZ1): an extra-small one for the
-  // trivial jobs (the ephemeral storage is Fargate's minimum) and a Spot twin of the new
+  // trivial jobs and a Spot twin of the new
   // medium (SZ10) for the trial that starts with the Renovate fleet jobs.
-  { label: 'fg-xsmall', vcpu: 0.5, memoryGiB: 1, ephemeralStorageGiB: 21 },
-  { label: 'fg-medium-spot', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 50, spot: true },
+  { label: 'fg-xsmall', vcpu: 0.5, memoryGiB: 1, ephemeralStorageGiB: 20 },
+  { label: 'fg-medium-spot', vcpu: 2, memoryGiB: 8, ephemeralStorageGiB: 20, spot: true },
   XLARGE_SHAPE,
 ];
+
+/**
+ * The ephemeral storage Fargate gives a task that sets none: 20 GiB, included in the price.
+ * Fargate accepts an explicit setting only from 21 GiB, so a shape of this size leaves the
+ * setting out (cdk-github-runners would otherwise put 25 in).
+ */
+export const FARGATE_DEFAULT_STORAGE_GIB = 20;
 
 export const DEFAULT_PERMISSIONS_BOUNDARY = 'pb@tech-grun';
 
@@ -251,8 +263,8 @@ export function crossChecks(config: GrunConfig): string[] {
     if (shapes.find((s) => s.label === pool.shape)?.spot) problems.push(`warm.pools: ${pool.shape} is a Spot shape`);
   }
   for (const s of shapes) {
-    if (s.ephemeralStorageGiB !== undefined && s.ephemeralStorageGiB < 21) {
-      problems.push(`shapes.${s.label}: ephemeralStorageGiB below the Fargate minimum of 21`);
+    if (s.ephemeralStorageGiB !== undefined && s.ephemeralStorageGiB < FARGATE_DEFAULT_STORAGE_GIB) {
+      problems.push(`shapes.${s.label}: ephemeralStorageGiB below ${FARGATE_DEFAULT_STORAGE_GIB}`);
     }
   }
   for (const s of shapes) {

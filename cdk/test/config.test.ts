@@ -180,6 +180,11 @@ describe('config', () => {
     const c: any = exampleConfig();
     c.shapes = [{ label: 'fg-x', vcpu: 1, memoryGiB: 4, ephemeralStorageGiB: 10 }];
     expect(() => validate(c)).toThrow(/ephemeralStorageGiB/);
+    c.shapes[0].ephemeralStorageGiB = 19;
+    expect(() => validate(c)).toThrow(/ephemeralStorageGiB/);
+    c.shapes[0].ephemeralStorageGiB = 20; // Fargate's default: allowed
+    c.warm = undefined;
+    expect(() => validate(c)).not.toThrow();
     c.shapes[0].ephemeralStorageGiB = 300;
     expect(() => validate(c)).toThrow(/ephemeralStorageGiB/);
   });

@@ -23,7 +23,7 @@ import {
 } from '@cloudsnorkel/cdk-github-runners';
 import { Construct } from 'constructs';
 import { CustomDomainApiAccess } from './access';
-import { GrunConfig, OrgConfig, SYSTEM_CA_BUNDLE, Shape, costTags, nixConfig, stackName, taskRoleName } from './config';
+import { FARGATE_DEFAULT_STORAGE_GIB, GrunConfig, OrgConfig, SYSTEM_CA_BUNDLE, Shape, costTags, nixConfig, stackName, taskRoleName } from './config';
 import { retention } from './runner-image';
 
 export interface OrgRunnersProps {
@@ -124,7 +124,8 @@ export class OrgRunners extends Construct {
         cluster: props.cluster,
         cpu: Math.round(shape.vcpu * 1024),
         memoryLimitMiB: Math.round(shape.memoryGiB * 1024),
-        ephemeralStorageGiB: shape.ephemeralStorageGiB ?? 50,
+        // The library takes 21 to 200 (and puts 25 in for none); 20 is left out below.
+        ephemeralStorageGiB: Math.max(shape.ephemeralStorageGiB ?? 50, FARGATE_DEFAULT_STORAGE_GIB + 1),
         spot: shape.spot ?? false,
         logRetention: taskLogRetention,
         // The task definition carries the tag too and the state machine
@@ -133,6 +134,11 @@ export class OrgRunners extends Construct {
         tags: { [tagNames.companyKey]: org.name },
       });
       this.providers[shape.label] = provider;
+      // 20 GiB is what Fargate gives a task with no ephemeral storage setting, free of charge;
+      // it cannot be set explicitly (the minimum of the setting is 21), so it is left out.
+      if (shape.ephemeralStorageGiB === FARGATE_DEFAULT_STORAGE_GIB) {
+        (provider.task.node.defaultChild as ecs.CfnTaskDefinition).addPropertyDeletionOverride('EphemeralStorage');
+      }
 
       // The container and task are marked internal by the library but are the
       // only handle on the task definition; there is no property for them.

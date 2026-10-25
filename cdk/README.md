@@ -103,7 +103,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runnerImage.cloudWatchAgent` | true | install the CloudWatch agent |
 | `runnerImage.extraCertificates.path` / `.pem` | | private CA to trust: a file (relative to the configuration file) or the PEM itself. Also sets `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt` on every task, since Node does not read the system store |
 | `runnerImage.extraCertificates.name` | `private-ca` | |
-| `shapes[]` | the six below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (21 to 200), `spot` (false: on-demand; true: Fargate Spot, see "Fargate Spot") |
+| `shapes[]` | the six below | `label`, `vcpu`, `memoryGiB`, `ephemeralStorageGiB` (20, or 21 to 200; see below), `spot` (false: on-demand; true: Fargate Spot, see "Fargate Spot") |
 | `requireSelfHostedLabel` | false | false lets a job say `runs-on: fg-large` alone |
 | `logRetentionDays` | 30 | every log group (the runner tasks' own: see `runner.logRetentionDays`) |
 | `runnerEnvironment.goproxy` | | `CI_RUNNER_GOPROXY` |
@@ -153,10 +153,18 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
 | `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
 
-Default shapes: `fg-large` 4 vCPU / 12 GB / 100 GiB, `fg-medium` 2 / 8 / 50,
-`fg-small` 1 / 4 / 50, `fg-xsmall` 0.5 / 1 / 21, `fg-medium-spot` 2 / 8 / 50 on
-Fargate Spot and `fg-xlarge` 8 / 16 / 100. Fargate takes only certain CPU and memory pairs; an
+Default shapes (vCPU / memory GB / ephemeral disk GiB): `fg-large` 4 / 12 / 30, `fg-medium` 2 / 8 / 20,
+`fg-small` 1 / 4 / 20, `fg-xsmall` 0.5 / 1 / 20, `fg-medium-spot` 2 / 8 / 20 on
+Fargate Spot and `fg-xlarge` 8 / 16 / 30. Fargate takes only certain CPU and memory pairs; an
 invalid pair fails at deploy.
+
+**Ephemeral storage.** A Fargate task has 20 GiB of ephemeral storage at no charge, and each GiB
+above that is billed. `ephemeralStorageGiB: 20` leaves the setting out of the task definition
+(Fargate's own default): ECS accepts an explicit value only from 21, and cdk-github-runners puts
+25 in when it is told nothing, so the app removes the property for a 20-GiB shape. 21 to 200 is
+set as given; absent in a shape of your own file, 50. The agent's `disk_total_mib` and
+`peak_disk_mib` (see "grun-agent") show how much a job used of what it got; the image and its
+layers are about 1.1 to 1.4 GiB of it before the job starts.
 
 ### Fargate Spot
 
