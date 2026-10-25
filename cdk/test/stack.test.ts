@@ -153,12 +153,13 @@ describe('network', () => {
 
 describe('providers', () => {
   const expected: Record<string, { cpu: string; memory: string; storage: number }> = {
-    'fg-large': { cpu: '4096', memory: '12288', storage: 100 },
-    'fg-medium': { cpu: '2048', memory: '8192', storage: 50 },
-    'fg-small': { cpu: '1024', memory: '4096', storage: 50 },
-    'fg-xsmall': { cpu: '512', memory: '1024', storage: 21 },
-    'fg-medium-spot': { cpu: '2048', memory: '8192', storage: 50 },
-    'fg-xlarge': { cpu: '8192', memory: '16384', storage: 100 },
+    // storage 20: Fargate's own default, no EphemeralStorage in the task definition
+    'fg-large': { cpu: '4096', memory: '12288', storage: 30 },
+    'fg-medium': { cpu: '2048', memory: '8192', storage: 20 },
+    'fg-small': { cpu: '1024', memory: '4096', storage: 20 },
+    'fg-xsmall': { cpu: '512', memory: '1024', storage: 20 },
+    'fg-medium-spot': { cpu: '2048', memory: '8192', storage: 20 },
+    'fg-xlarge': { cpu: '8192', memory: '16384', storage: 30 },
   };
 
   it('has six Fargate ARM shapes per organisation', () => {
@@ -173,7 +174,8 @@ describe('providers', () => {
       expect(shape, id).toBeDefined();
       expect(p.Cpu).toBe(expected[shape!].cpu);
       expect(p.Memory).toBe(expected[shape!].memory);
-      expect(p.EphemeralStorage.SizeInGiB).toBe(expected[shape!].storage);
+      if (expected[shape!].storage === 20) expect(p.EphemeralStorage, id).toBeUndefined();
+      else expect(p.EphemeralStorage.SizeInGiB).toBe(expected[shape!].storage);
     }
   });
 

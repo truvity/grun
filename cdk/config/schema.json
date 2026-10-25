@@ -122,7 +122,7 @@
       }
     },
     "shapes": {
-      "description": "Runner sizes. One Fargate ARM provider per shape and organisation; the label is what a job puts in runs-on. Default: fg-large 4 vCPU/12 GB, fg-medium 2/8, fg-small 1/4, fg-xsmall 0.5/1, and fg-medium-spot 2/8 on Fargate Spot, fg-xlarge 8/16.",
+      "description": "Runner sizes. One Fargate ARM provider per shape and organisation; the label is what a job puts in runs-on. Default: fg-large 4 vCPU/12 GB/30 GiB disk, fg-medium 2/8/20, fg-small 1/4/20, fg-xsmall 0.5/1/20, fg-medium-spot 2/8/20 on Fargate Spot, fg-xlarge 8/16/30.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -133,7 +133,7 @@
           "label": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,20}$" },
           "vcpu": { "type": "number", "enum": [0.25, 0.5, 1, 2, 4, 8, 16] },
           "memoryGiB": { "type": "number", "minimum": 0.5, "maximum": 120 },
-          "ephemeralStorageGiB": { "type": "integer", "minimum": 21, "maximum": 200, "default": 50 },
+          "ephemeralStorageGiB": { "type": "integer", "minimum": 20, "maximum": 200, "default": 50, "description": "GiB. 20 is Fargate's default and included in the price (the setting is left out of the task definition); each GiB above 20 is billed." },
           "spot": { "type": "boolean", "default": false, "description": "Run the tasks on the FARGATE_SPOT capacity provider. An interruption fails the job it runs; GitHub does not retry it. Never for a stable tier." }
         }
       }

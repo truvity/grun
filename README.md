@@ -28,7 +28,7 @@ What it builds, in short:
 
 - **Providers**: `fg-large` (4 vCPU / 12 GB), `fg-medium` (2 / 8), `fg-small`
   (1 / 4), `fg-xsmall` (0.5 / 1), `fg-medium-spot` (2 / 8, on Fargate Spot) and `fg-xlarge` (8 / 16)
-  per organisation, each with ephemeral storage sized for builds and a
+  per organisation, each with ephemeral storage sized from measured disk use (20 GiB, Fargate's free default, up to `fg-large` and `fg-xlarge` at 30) and a
   task role per organisation whose policies come from the configuration. A
   shape on Spot (`shapes[].spot`) is a trial for jobs a rerun absorbs: **a Spot
   interruption stops the task and fails the job, GitHub does not retry it, and
