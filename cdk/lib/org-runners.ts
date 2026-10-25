@@ -11,6 +11,7 @@ import {
   aws_s3 as s3,
   aws_kms as kms,
   aws_secretsmanager as secretsmanager,
+  aws_sqs as sqs,
   aws_sns as sns,
   aws_ssm as ssm,
 } from 'aws-cdk-lib';
@@ -41,6 +42,9 @@ export interface OrgRunnersProps {
   /** True for the first organisation: it owns the stack-wide dashboard. */
   firstOrg: boolean;
 }
+
+/** Seconds added to the idle timeout before the idle reaper first looks at a runner (see tuneIdleReaper). */
+export const IDLE_REAPER_MARGIN_SECONDS = 60;
 
 /** The runner environment of one organisation's tasks: cache endpoints, the buildkit client settings, extras. */
 export function runnerEnvironment(config: GrunConfig, org: OrgConfig): Record<string, string> {
@@ -200,6 +204,8 @@ export class OrgRunners extends Construct {
       statusAccess: LambdaAccess.noAccess(),
     });
 
+    this.tuneIdleReaper(config);
+
     if (config.warm && (org.warm ?? true)) {
       const w = config.warm;
       w.pools.forEach((pool, i) => {
@@ -248,6 +254,36 @@ export class OrgRunners extends Construct {
       this.runners.createLogsInsightsQueries(stackName(config));
       this.runners.createDashboard(stackName(config));
     }
+  }
+
+  /**
+   * The idle reaper looks at a runner only after the library's queue has held its message
+   * for ten minutes (a fixed SQS delivery delay, whatever the idle timeout) and, behind that,
+   * a one-minute batching window, so an idle runner lived 10 to 11 minutes at the least, with
+   * the configured 2 or 5 minutes. The delay is now the idle timeout plus a minute (the runner
+   * registers about 40 seconds after its execution starts, and the reaper measures from that,
+   * so an earlier look finds it not idle long enough and the next one is a visibility timeout
+   * away) and the batching window is gone: an idle runner is removed about idleTimeout plus a
+   * minute after it started.
+   */
+  private tuneIdleReaper(config: GrunConfig): void {
+    const idleSeconds = (config.runner?.idleTimeoutMinutes ?? 5) * 60;
+    const delay = Math.min(idleSeconds + IDLE_REAPER_MARGIN_SECONDS, 900);
+    let queues = 0;
+    let mappings = 0;
+    for (const node of this.runners.node.findAll()) {
+      if (!node.node.path.includes('Idle Reaper')) continue;
+      if (node instanceof sqs.CfnQueue) {
+        node.addPropertyOverride('DelaySeconds', delay);
+        queues++;
+      }
+      if (node instanceof lambda.CfnEventSourceMapping) {
+        node.addPropertyOverride('MaximumBatchingWindowInSeconds', 0);
+        mappings++;
+      }
+    }
+    // The library keeps these private: if it changes its layout, fail the synth, not the reaping.
+    if (queues !== 1 || mappings !== 1) throw new Error(`cdk-github-runners' idle reaper queue and event source were not found (queues ${queues}, mappings ${mappings}); the library changed its layout`);
   }
 
   /** Secrets Manager secrets the sync Lambda fills for this organisation. */

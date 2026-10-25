@@ -220,12 +220,12 @@ export class GrunStack extends Stack {
   }
 
   /**
-   * The requeue function (lambda/requeue): every five minutes it looks at the
-   * runs of which a runner ended without a job (the idle reaper) or failed to
-   * start, and starts a runner again for each of their jobs still queued that
-   * no running runner of the stack is there for. A matrix with max-parallel
-   * makes its last jobs runnable after their runners were reaped, and GitHub
-   * sends the queued webhook only once.
+   * The requeue function (lambda/requeue): every five minutes it looks at every
+   * queued job of the organisations' repositories, whatever became of the runner
+   * the webhook started for it (deferred at the task cap, reaped idle, stolen),
+   * and starts a runner for each that no idle or starting runner of the stack
+   * covers, the oldest first, while the task cap holds. GitHub sends the queued
+   * webhook only once.
    */
   private addRequeue(config: GrunConfig, name: string, maxTasks: number): void {
     const orgTargets = config.orgs.map((org) => {
@@ -234,15 +234,17 @@ export class GrunStack extends Stack {
       const orchestrator = (runners as unknown as { orchestrator: sfn.StateMachine }).orchestrator;
       if (!orchestrator?.stateMachineArn) throw new Error('cdk-github-runners has no orchestrator to requeue through (the library changed its layout)');
       const s = this.orgs[org.name].secrets;
-      return { org: org.name, orchestrator, github: s.github, privateKey: s.privateKey };
+      // Provider construct path -> labels, as the provider selector gets them.
+      const providers = Object.fromEntries(Object.values(this.orgs[org.name].providers).map((p) => [p.node.path, p.labels]));
+      return { org: org.name, orchestrator, github: s.github, privateKey: s.privateKey, providers };
     });
     const fn = new nodejs.NodejsFunction(this, 'Requeue', {
-      description: 'Starts a runner again for a job still queued after the runner started for it went away',
+      description: 'Starts a runner again for a job still queued with no runner coming for it',
       entry: path.join(LAMBDA_ROOT, 'requeue', 'handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
-      timeout: Duration.seconds(120),
+      timeout: Duration.seconds(240),
       memorySize: 256,
       // Two rounds at once would count the same queued job twice.
       reservedConcurrentExecutions: 1,
@@ -253,12 +255,20 @@ export class GrunStack extends Stack {
             stateMachineArn: t.orchestrator.stateMachineArn,
             githubSecretArn: t.github.secretArn,
             privateKeySecretArn: t.privateKey.secretArn,
+            providers: t.providers,
           })),
         ),
         CLUSTER_ARN: this.cluster.clusterArn,
         MAX_CONCURRENT_TASKS: String(maxTasks),
-        WINDOW_MINUTES: '30',
         MAX_JOB_AGE_MINUTES: '360',
+        // What the webhook handler gives its runners; the same routing and allow-list as the selector.
+        IDLE_TIMEOUT_SECONDS: String((config.runner?.idleTimeoutMinutes ?? 5) * 60),
+        SHAPE_LABELS: [...(config.shapes ?? DEFAULT_SHAPES)]
+          .sort((a, b) => a.vcpu - b.vcpu || a.memoryGiB - b.memoryGiB)
+          .map((s) => s.label)
+          .join(','),
+        ...(allowList(config) ? { ALLOW_LIST: JSON.stringify(allowList(config)) } : {}),
+        BUDGET_SECONDS: '200',
       },
       logGroup: new logs.LogGroup(this, 'RequeueLogs', {
         retention: retention(config.logRetentionDays ?? 30),
@@ -280,7 +290,7 @@ export class GrunStack extends Stack {
       }),
     );
     new events.Rule(this, 'RequeueSchedule', {
-      description: `${name}: start a runner again for a job still queued after its runner went away`,
+      description: `${name}: start a runner for every queued job no idle or starting runner covers`,
       schedule: events.Schedule.rate(Duration.minutes(5)),
       targets: [new targets.LambdaFunction(fn)],
     });
