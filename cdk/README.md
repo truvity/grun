@@ -123,7 +123,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `runner.idleTimeoutMinutes` | 5 (the library's) | minutes a registered runner may stay idle before the idle reaper stops it and removes it from GitHub (see "Runner hygiene") |
 | `runner.logRetentionDays` | `logRetentionDays` | retention of the runner tasks' log groups (the runner and init containers' stdout); the orchestration functions, the state machine and the image builder keep `logRetentionDays` |
 | `runner.traceToStdout` | false | `ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT` on every task. The upstream runner image sets it to 1, which copies the listener's and the worker's whole diagnostic trace (`[RUNNER …]` / `[WORKER …]`, INFO included) to stdout and so into the task's log group: nearly all of what those groups ingest. Off, stdout keeps the runner's terminal output (start-up, `Running job`, `Job … completed`, its error lines) and the hooks' lines; the trace is still written to `_diag` in the task, where cdk-github-runners reads the job's result |
-| `runner.requeue` | true | the requeue function (see "Runner hygiene"): a runner again for a job still queued after the runner started for it went away |
+| `runner.requeue` | true | the requeue function (see "Runner hygiene"): a runner for every queued job no idle or starting runner covers (see "Runner hygiene") went away |
 | `runner.secretKmsKeyArn` | | key that encrypts those parameters; the execution role gets `kms:Decrypt` on it. Omit for the AWS-managed SSM key |
 | `telemetry.otlpEndpoint`, `telemetry.issuerUrl` | | where grun-agent sends the runner's warnings and errors and each job's peaks (OTLP/HTTP JSON, `/v1/logs` and `/v1/metrics`), and the issuer whose `<issuerUrl>/token` trades the task role's web identity token for an access token (RFC 8693). Set, the task roles may call `sts:GetWebIdentityToken` for `stsAudience` (ES384, at most 300 s). Absent: the peaks are printed in the job log and nothing is sent (see "grun-agent") |
 | `telemetry.stsAudience` | `issuerUrl` | audience asked of STS |
@@ -268,7 +268,12 @@ spent. `runner.idleTimeoutMinutes` shrinks the window in which a runner that
 nobody picked up can be handed a job it was not started for.
 
 **`runner.idleTimeoutMinutes`** is cdk-github-runners' `idleTimeout`. Every
-runner start queues a check for the idle reaper; the reaper looks at the runner
+runner start queues a check for the idle reaper (the library holds the message for
+a fixed ten minutes before the reaper first sees it, behind a one-minute batching window,
+so an idle runner used to live 10 to 11 minutes with any timeout, the configured 2 or 5
+included. The stack now sets the delay to the timeout plus a minute and removes the
+window: an idle runner is gone about `idleTimeoutMinutes + 1` minutes after it started,
+so about three minutes at 2); the reaper looks at the runner
 on GitHub and, when it is registered, **not busy** and has been registered for
 longer than the timeout (it measures from the `cdkghr:started` label, that is
 from registration, not from the start of the task), stops the runner's Step
@@ -285,27 +290,43 @@ that registers within a minute. The value reaches the webhook Lambda
 removes a runner that is still waiting for GitHub to hand it its job, so the
 job queues again, so keep it above the registration time of the slowest shape.
 
-**`runner.requeue`** (on by default) covers what the reaper leaves behind.
-GitHub sends a job's `workflow_job` queued webhook once, when the job is
-created, and the stack starts one runner for it. A matrix with `max-parallel`
-creates all its jobs at once but dispatches only so many at a time, so its last
-jobs become runnable after their runners were reaped, and without another
-webhook they stay queued until somebody cancels them (seen on a renovate fleet
-of 18 jobs at `max-parallel: 4`: the last two queued all night). The requeue
-function runs every five minutes. For each run of which a runner of this stack
-ended in the last 30 minutes without a job (aborted `IdleRunner`) or failed to
-start, it reads the run's jobs as the organisation's App and starts, through the
-same state machine and with the webhook's input, one runner per job of the same
-label set that is still queued, less the runners still running for that run.
-Runners are interchangeable within a label set, which is why it counts per run
-and not per job: a stranded job's own runner has usually served another job. It
-leaves alone a completed run (a re-run can leave queued records in one), a job
-queued for more than six hours, and anything beyond the task cap (the next round
-tries again). A runner it starts that is still not handed a job is reaped like
-any other and the next round starts another, so a waiting job costs one idle
-task per round. Its log lines (`Queued jobs without a runner`, `Started a runner
-for a queued job`) are in its own log group, and it alarms after three failed
-rounds.
+**`runner.requeue`** (on by default) starts a runner for every job that is queued with no runner coming for it.
+GitHub sends a job's `workflow_job` queued webhook once, when the job is created, and
+the stack starts one runner for it. Everything after that can lose the race: at the task
+cap the selector defers the delivery and later redeliveries lose to newer jobs; the idle
+reaper removes a runner that took no job in time (a matrix with `max-parallel` creates
+all its jobs at once but runs only so many); cdk-github-runners replaces a stolen runner
+three times and then stops. A job whose runner went away in any of those ways stayed
+queued until somebody cancelled it (a trust-form fleet run sat for hours at the cap).
+The requeue function does not look at how an execution ended; it looks at the jobs. Every
+five minutes, per organisation, as the organisation's App:
+
+1. it lists the repositories of the installation and, for each, the runs that are queued or
+   in progress and their jobs (a rate-limit budget and a time budget bound the round;
+   `Requeue round` logs the number of GitHub calls and what is left of the limit);
+2. keeps the jobs that are `queued`, older than 90 seconds (the webhook's own runner is on its
+   way before that) and younger than six hours, that the stack serves: the provider
+   selector's own routing and `orgs[].allow` decide, so a job of another repository or
+   workflow, or with no shape label, is left alone;
+3. subtracts the runners that already cover them. A runner covers one job whose labels it
+   carries: the registered runners of this stack that are online and not busy (the
+   organisation's runner list; without the permission to read it, none), and the
+   executions that have not registered yet and are under four minutes old. A runner that
+   is stuck, offline or taken by another job covers nothing;
+4. starts one runner for each job left, the oldest first across all organisations, through
+   the same state machine and with the webhook's input, while the task cap holds (the
+   next round tries again). Each start is a named execution, `<repository>-rq-<job>-<attempt>`:
+   a name is never started twice, so two rounds cannot double-start, and a job gets at
+   most five attempts (`A queued job has had its runners and still waits` is logged, for a
+   job nobody can serve, such as a repository outside the runner group).
+
+It does not depend on the library's replacement limit: a job still queued a round later
+with no free runner gets another. Its lines are in its own log group: `Requeue round` (per
+organisation: repositories, runs, queued jobs, free runners, jobs without a runner), and one
+`Started a runner for a queued job` per rescued job (repository, job, queued seconds,
+labels, attempt, execution name). It alarms after three failed rounds. The task cap
+(`costCap.maxConcurrentTasks`) is unchanged: at the cap a rescue waits for a free slot, and
+idle runners now free theirs sooner (below).
 
 **`orgs[].allow`** is the webhook allow-list, checked by the provider selector
 before it routes the job or looks at capacity. A job whose repository is not

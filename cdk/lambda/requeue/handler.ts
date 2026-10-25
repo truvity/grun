@@ -1,51 +1,68 @@
-// Runs every few minutes and starts a runner again for a job that is still
-// queued after the runner started for it went away.
+// Runs every few minutes and starts a runner for every job that is queued with no
+// runner coming for it, whatever happened to the runner it was first given.
 //
-// cdk-github-runners starts one runner per `workflow_job` queued webhook and its
-// idle reaper stops a runner that has not taken a job within the idle timeout.
-// GitHub sends that webhook once, when the job is created. A matrix with
-// `max-parallel` creates all its jobs at once but dispatches only so many at a
-// time, so the last jobs become runnable long after their runners were reaped,
-// and nothing ever starts another runner for them: they stay queued until
-// someone cancels them (seen on a renovate fleet of 18 jobs at max-parallel 4).
-// Runners are interchangeable within a label set, so the job a runner was
-// started for is not the one it takes, and a stranded job's own runner may well
-// have succeeded on another job.
+// cdk-github-runners starts one runner per `workflow_job` queued webhook and GitHub
+// sends that webhook once, when the job is created. Everything after that can lose the
+// race: at the task cap the selector defers the delivery and later redeliveries lose to
+// newer jobs; the idle reaper stops a runner that took no job in time (a matrix with
+// `max-parallel` creates all its jobs at once but runs only so many); the library
+// replaces a stolen runner only three times. A job whose runner went away in any of those
+// ways stays queued until someone cancels it.
 //
-// So the unit is the workflow run, not the job. Every run of which a runner of
-// this stack ended without a job (aborted by the idle reaper) or failed to start
-// in the window is looked at: its jobs that are still queued, minus the runners
-// of this stack still running for that run, is how many runners it lacks, per
-// label set. Those are started through the same state machine, with the input
-// the webhook gave, pointed at the stranded job. The task cap holds; a job
-// queued for longer than the age limit, and a run that has completed (a re-run
-// can leave queued records behind in a finished run), are left alone.
+// So this function does not wait for an execution to end and then look: it looks at the
+// jobs. Per organisation (its App installation): every repository's active runs (queued or
+// in progress), their jobs that are queued and old enough for the webhook's own runner to
+// have started, and which of those the stack routes (the provider selector's label routing
+// and allow-list, the same code). Runners are interchangeable within a label set, so a
+// queued job is covered by any runner of the stack that is idle (registered and not busy)
+// or still starting (a running execution not registered yet, young enough to be starting)
+// and carries the job's labels, each runner covering one job. The jobs left over, the
+// oldest first and across organisations, get a runner through the same state machine with
+// the input the webhook would have given, while the task cap holds. Nothing here depends on
+// what became of an earlier runner, so a job still queued a round later gets another one,
+// up to a few attempts (each attempt is its own execution name, which is also what keeps two
+// rounds from starting the same one twice).
 import { ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import {
   DescribeExecutionCommand,
+  ExecutionAlreadyExists,
+  ExecutionDoesNotExist,
   ExecutionStatus,
   ListExecutionsCommand,
   SFNClient,
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import * as crypto from 'node:crypto';
+import { AllowList, allowed, parseAllowList, route } from '../provider-selector/handler';
 
 export interface Target {
   org: string;
   stateMachineArn: string;
   githubSecretArn: string;
   privateKeySecretArn: string;
+  /** provider construct path -> labels, as the selector gets them. */
+  providers: Record<string, string[]>;
 }
 
 export interface RequeueConfig {
   targets: Target[];
   clusterArn: string;
   maxConcurrentTasks: number;
-  /** Executions that ended this recently are looked at. */
-  windowMinutes: number;
   /** A job queued for longer than this is not served again. */
   maxJobAgeMinutes: number;
+  /** A job younger than this is the webhook's own runner's business. */
+  graceSeconds: number;
+  /** A running execution that has not registered a runner is starting for this long. */
+  startingMinutes: number;
+  /** Runners started for one job, over its life. */
+  maxAttempts: number;
+  /** The idle timeout the webhook gives its runners (seconds). */
+  maxIdleSeconds: number;
+  shapeLabels: string[];
+  allow?: AllowList;
+  /** Stop looking at GitHub when this much of the invocation is spent (ms). */
+  budgetMs: number;
 }
 
 /** The state machine input the webhook handler writes (cdk-github-runners). */
@@ -64,15 +81,33 @@ export interface RunnerInput {
 
 export interface GitHubJob {
   id: number;
+  run_id?: number;
+  name?: string;
   status: string;
   labels: string[];
   created_at: string;
   html_url: string;
+  workflow_name?: string | null;
+  head_branch?: string | null;
 }
 
+export interface GitHubRunner {
+  name: string;
+  status: string;
+  busy: boolean;
+  labels: string[];
+}
+
+/** One organisation, as its App installation. */
 export interface GitHub {
-  run(owner: string, repo: string, runId: number): Promise<{ status: string }>;
-  jobs(owner: string, repo: string, runId: number): Promise<GitHubJob[]>;
+  installationId: number;
+  /** owner/name of every repository the installation reaches. */
+  repositories(): Promise<string[]>;
+  /** Runs of the repository that are queued or in progress. */
+  activeRuns(repo: string): Promise<number[]>;
+  jobs(repo: string, runId: number): Promise<GitHubJob[]>;
+  /** The organisation's registered runners; undefined when the App may not list them. */
+  runners(): Promise<GitHubRunner[] | undefined>;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): RequeueConfig {
@@ -85,11 +120,17 @@ export function loadConfig(env: NodeJS.ProcessEnv): RequeueConfig {
   };
   if (!env.CLUSTER_ARN) throw new Error('CLUSTER_ARN is required');
   return {
-    targets,
+    targets: targets.map((t) => ({ ...t, providers: t.providers ?? {} })),
     clusterArn: env.CLUSTER_ARN,
     maxConcurrentTasks: n('MAX_CONCURRENT_TASKS', 20),
-    windowMinutes: n('WINDOW_MINUTES', 30),
     maxJobAgeMinutes: n('MAX_JOB_AGE_MINUTES', 360),
+    graceSeconds: n('GRACE_SECONDS', 90),
+    startingMinutes: n('STARTING_MINUTES', 4),
+    maxAttempts: n('MAX_ATTEMPTS', 5),
+    maxIdleSeconds: n('IDLE_TIMEOUT_SECONDS', 300),
+    shapeLabels: (env.SHAPE_LABELS ?? '').split(',').filter(Boolean),
+    allow: env.ALLOW_LIST ? parseAllowList(env.ALLOW_LIST) : undefined,
+    budgetMs: n('BUDGET_SECONDS', 200) * 1000,
   };
 }
 
@@ -101,140 +142,125 @@ export function runOf(jobUrl: string): { owner: string; repo: string; runId: num
 
 /** The label set as cdk-github-runners compares it: lowercase, order-free. */
 export function labelKey(labels: string[] | string): string {
+  return labelList(labels).sort().join(',');
+}
+
+function labelList(labels: string[] | string): string[] {
   const list = Array.isArray(labels) ? labels : labels.split(',');
-  return list
-    .map((l) => l.trim().toLowerCase())
-    .filter(Boolean)
-    .sort()
-    .join(',');
+  return list.map((l) => l.trim().toLowerCase()).filter(Boolean);
 }
 
-/** A runner name GitHub accepts (at most 64 characters), unique per start. */
-export function executionName(repo: string, jobId: number, now: number): string {
+/** A runner name GitHub accepts (at most 64 characters), unique per job and attempt. */
+export function executionName(repo: string, jobId: number, attempt: number): string {
   const safe = repo.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 24);
-  return `${safe}-rq-${jobId}-${now.toString(36)}`.slice(0, 64);
+  return `${safe}-rq-${jobId}-${attempt}`.slice(0, 64);
 }
 
-interface Ended {
-  input: RunnerInput;
-  why: string;
-}
+// ---- what covers a queued job
 
-/** Executions that ended without serving a job (idle reaper) or failed, in the window. */
-async function ended(sfn: SFNClient, target: Target, sinceMs: number): Promise<Ended[]> {
-  const out: Ended[] = [];
-  for (const status of [ExecutionStatus.ABORTED, ExecutionStatus.FAILED, ExecutionStatus.TIMED_OUT]) {
-    let token: string | undefined;
-    do {
-      const page = await sfn.send(new ListExecutionsCommand({ stateMachineArn: target.stateMachineArn, statusFilter: status, maxResults: 100, nextToken: token }));
-      token = page.nextToken;
-      let older = false;
-      for (const e of page.executions ?? []) {
-        // Newest first; an idle abort comes minutes after the start, a failure sooner.
-        if ((e.startDate?.getTime() ?? 0) < sinceMs - 60 * 60_000) {
-          older = true;
-          break;
-        }
-        if ((e.stopDate?.getTime() ?? 0) < sinceMs) continue;
-        const d = await sfn.send(new DescribeExecutionCommand({ executionArn: e.executionArn }));
-        if (status === ExecutionStatus.ABORTED && d.error !== 'IdleRunner') continue;
-        try {
-          out.push({ input: JSON.parse(d.input ?? '{}') as RunnerInput, why: `${status} ${d.error ?? ''}`.trim() });
-        } catch {
-          /* not one of the webhook's */
-        }
-      }
-      if (older) break;
-    } while (token);
-  }
-  return out;
-}
-
-/** Runners of this stack still running, per run and label set. */
-async function running(sfn: SFNClient, target: Target): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
-  let token: string | undefined;
-  do {
-    const page = await sfn.send(new ListExecutionsCommand({ stateMachineArn: target.stateMachineArn, statusFilter: ExecutionStatus.RUNNING, maxResults: 100, nextToken: token }));
-    token = page.nextToken;
-    for (const e of page.executions ?? []) {
-      const d = await sfn.send(new DescribeExecutionCommand({ executionArn: e.executionArn }));
-      try {
-        const input = JSON.parse(d.input ?? '{}') as RunnerInput;
-        const run = runOf(input.jobUrl ?? '');
-        if (!run) continue;
-        const k = `${run.runId}|${labelKey(input.jobLabels ?? '')}`;
-        counts.set(k, (counts.get(k) ?? 0) + 1);
-      } catch {
-        /* not one of the webhook's */
-      }
-    }
-  } while (token);
-  return counts;
-}
-
-async function runningTasks(ecs: ECSClient, clusterArn: string): Promise<number> {
-  let n = 0;
-  let token: string | undefined;
-  do {
-    const page = await ecs.send(new ListTasksCommand({ cluster: clusterArn, nextToken: token }));
-    n += page.taskArns?.length ?? 0;
-    token = page.nextToken;
-  } while (token);
-  return n;
-}
-
-export interface Start {
+/** A runner that is, or is about to be, free to take a job. */
+export interface Free {
   name: string;
+  labels: Set<string>;
+  /** `idle`: registered and not busy. `starting`: its execution runs and it has not registered yet. */
+  kind: 'idle' | 'starting';
+}
+
+export interface Execution {
+  name: string;
+  startMs: number;
+  /** The webhook's input: `labels` is what the runner registers with. */
   input: RunnerInput;
 }
 
 /**
- * The runners a set of ended executions calls for: per run and label set, its
- * still-queued jobs less the runners still running for it. Pure, for the tests.
+ * The runners that can still take a job: the registered ones of this stack (those named like
+ * a running execution) that are online and not busy, and the executions that have not
+ * registered yet and started recently enough to be on their way. Without the runner list,
+ * only the starting ones count.
  */
-export async function plan(
-  endedRunners: Ended[],
-  runningCounts: Map<string, number>,
-  github: GitHub,
+export function freeRunners(running: Execution[], registered: GitHubRunner[] | undefined, nowMs: number, startingMs: number): Free[] {
+  const byName = new Map((registered ?? []).map((r) => [r.name, r]));
+  const out: Free[] = [];
+  for (const e of running) {
+    const r = byName.get(e.name);
+    if (r) {
+      if (r.status === 'online' && !r.busy) out.push({ name: e.name, labels: new Set(labelList(r.labels)), kind: 'idle' });
+    } else if (nowMs - e.startMs <= startingMs) {
+      out.push({ name: e.name, labels: new Set(labelList(e.input.labels ?? '')), kind: 'starting' });
+    }
+  }
+  return out;
+}
+
+export interface Queued {
+  repository: string;
+  job: GitHubJob;
+  /** The provider and its labels, as the selector routes the job. */
+  provider: string;
+  providerLabels: string[];
+  org: string;
+  installationId: number;
+}
+
+/**
+ * The queued jobs no free runner covers, the oldest first. Each free runner covers one job
+ * whose labels it carries; a runner is taken by the oldest job it can serve. Pure.
+ */
+export function uncovered(queued: Queued[], free: Free[]): Queued[] {
+  const pool = [...free];
+  const sorted = [...queued].sort((a, b) => Date.parse(a.job.created_at) - Date.parse(b.job.created_at));
+  const out: Queued[] = [];
+  for (const q of sorted) {
+    const want = labelList(q.job.labels);
+    const i = pool.findIndex((f) => want.every((l) => f.labels.has(l)));
+    if (i >= 0) pool.splice(i, 1);
+    else out.push(q);
+  }
+  return out;
+}
+
+/** The queued jobs of one organisation's scan that the stack serves, old enough and not too old. */
+export function candidates(
+  scanned: { repository: string; job: GitHubJob }[],
+  t: { org: string; providers: Record<string, string[]>; installationId: number },
+  c: Pick<RequeueConfig, 'shapeLabels' | 'allow' | 'graceSeconds' | 'maxJobAgeMinutes'>,
   nowMs: number,
-  maxJobAgeMs: number,
-): Promise<{ starts: Start[]; notes: Record<string, unknown>[] }> {
-  const starts: Start[] = [];
-  const notes: Record<string, unknown>[] = [];
-  // One sample input per run and label set: provider, labels and installation are the same for each.
-  const groups = new Map<string, { run: NonNullable<ReturnType<typeof runOf>>; sample: RunnerInput; key: string }>();
-  for (const e of endedRunners) {
-    const run = runOf(e.input.jobUrl ?? '');
-    if (!run) continue;
-    const key = labelKey(e.input.jobLabels ?? '');
-    groups.set(`${run.runId}|${key}`, { run, sample: e.input, key });
+): Queued[] {
+  const out: Queued[] = [];
+  const seen = new Set<number>();
+  for (const { repository, job } of scanned) {
+    if (job.status !== 'queued' || seen.has(job.id)) continue;
+    const age = nowMs - Date.parse(job.created_at);
+    if (!(age >= c.graceSeconds * 1000) || age > c.maxJobAgeMinutes * 60_000) continue;
+    const payload = {
+      workflow_job: { labels: job.labels, workflow_name: job.workflow_name ?? null, head_branch: job.head_branch ?? null },
+      repository: { full_name: repository },
+      organization: { login: t.org },
+    };
+    if (!allowed(payload, c.allow)) continue;
+    const chosen = route({ payload, providers: t.providers }, c.shapeLabels);
+    if (!chosen.provider || !chosen.labels) continue;
+    seen.add(job.id);
+    out.push({ repository, job, provider: chosen.provider, providerLabels: chosen.labels, org: t.org, installationId: t.installationId });
   }
-  const runs = new Map<number, { status: string; jobs: GitHubJob[] }>();
-  for (const [k, g] of groups) {
-    let r = runs.get(g.run.runId);
-    if (!r) {
-      const meta = await github.run(g.run.owner, g.run.repo, g.run.runId);
-      r = { status: meta.status, jobs: meta.status === 'completed' ? [] : await github.jobs(g.run.owner, g.run.repo, g.run.runId) };
-      runs.set(g.run.runId, r);
-    }
-    if (r.status === 'completed') continue;
-    const queued = r.jobs.filter(
-      (j) => j.status === 'queued' && labelKey(j.labels) === g.key && nowMs - Date.parse(j.created_at) <= maxJobAgeMs,
-    );
-    const lacking = queued.length - (runningCounts.get(k) ?? 0);
-    if (lacking <= 0) continue;
-    notes.push({ notice: 'Queued jobs without a runner', owner: g.run.owner, repo: g.run.repo, runId: g.run.runId, labels: g.key, queued: queued.length, running: runningCounts.get(k) ?? 0 });
-    // The oldest jobs first; any runner of the label set may take any of them.
-    queued.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-    for (const job of queued.slice(0, lacking)) {
-      starts.push({
-        name: executionName(g.run.repo, job.id, nowMs + starts.length),
-        input: { ...g.sample, jobId: job.id, jobUrl: job.html_url },
-      });
-    }
-  }
-  return { starts, notes };
+  return out;
+}
+
+/** The webhook's input for a job, as the library's webhook handler builds it. */
+export function runnerInput(q: Queued, maxIdleSeconds: number): RunnerInput {
+  const [owner, repo] = q.repository.split('/');
+  return {
+    owner,
+    repo,
+    jobId: q.job.id,
+    jobUrl: q.job.html_url,
+    installationId: q.installationId,
+    jobLabels: q.job.labels.join(','),
+    provider: q.provider,
+    labels: q.providerLabels.join(','),
+    maxIdleSeconds,
+  };
 }
 
 // ---- GitHub, as the organisation's App installation
@@ -250,47 +276,143 @@ export function apiBase(domain: string | undefined): string {
   return !domain || domain === 'github.com' ? 'https://api.github.com' : `https://${domain}/api/v3`;
 }
 
-export function gitHubFor(secrets: { domain?: string; appId: string; privateKey: string }): (installationId: number) => GitHub {
+/** Requests spent against the installation's rate limit, and what GitHub says is left of it. */
+export interface Budget {
+  calls: number;
+  remaining?: number;
+}
+
+export async function gitHubFor(
+  org: string,
+  secrets: { domain?: string; appId: string; privateKey: string },
+  budget: Budget,
+  fetchFn: typeof fetch = fetch,
+): Promise<GitHub> {
   const base = apiBase(secrets.domain);
-  const tokens = new Map<number, Promise<string>>();
-  const token = (installationId: number) => {
-    let t = tokens.get(installationId);
-    if (!t) {
-      t = (async () => {
-        const res = await fetch(`${base}/app/installations/${installationId}/access_tokens`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${appJwt(secrets.appId, secrets.privateKey, Math.floor(Date.now() / 1000))}`, Accept: 'application/vnd.github+json' },
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!res.ok) throw new Error(`installation token: HTTP ${res.status}`);
-        return ((await res.json()) as { token: string }).token;
-      })();
-      tokens.set(installationId, t);
+  const jwt = () => appJwt(secrets.appId, secrets.privateKey, Math.floor(Date.now() / 1000));
+  const call = async (bearer: string, path: string, init?: RequestInit) => {
+    budget.calls++;
+    const res = await fetchFn(`${base}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/vnd.github+json', ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const left = Number(res.headers.get('x-ratelimit-remaining'));
+    if (res.headers.get('x-ratelimit-remaining') !== null && Number.isFinite(left)) budget.remaining = left;
+    return res;
+  };
+  const inst = await call(jwt(), `/orgs/${org}/installation`);
+  if (!inst.ok) throw new Error(`${org}: GET /orgs/${org}/installation: HTTP ${inst.status}`);
+  const installationId = ((await inst.json()) as { id: number }).id;
+  const tok = await call(jwt(), `/app/installations/${installationId}/access_tokens`, { method: 'POST' });
+  if (!tok.ok) throw new Error(`${org}: installation token: HTTP ${tok.status}`);
+  const token = ((await tok.json()) as { token: string }).token;
+  const get = async (path: string) => {
+    const res = await call(token, path);
+    if (!res.ok) throw Object.assign(new Error(`GET ${path}: HTTP ${res.status}`), { status: res.status });
+    return res.json();
+  };
+  const pages = async <T>(path: string, key: string, max: number): Promise<T[]> => {
+    const out: T[] = [];
+    const sep = path.includes('?') ? '&' : '?';
+    for (let page = 1; page <= max; page++) {
+      const r = (await get(`${path}${sep}per_page=100&page=${page}`)) as Record<string, T[]>;
+      out.push(...(r[key] ?? []));
+      if ((r[key] ?? []).length < 100) break;
     }
-    return t;
+    return out;
   };
-  return (installationId: number): GitHub => {
-    const get = async (p: string) => {
-      const res = await fetch(`${base}${p}`, {
-        headers: { Authorization: `Bearer ${await token(installationId)}`, Accept: 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) throw new Error(`GET ${p}: HTTP ${res.status}`);
-      return res.json();
-    };
-    return {
-      run: async (owner, repo, runId) => (await get(`/repos/${owner}/${repo}/actions/runs/${runId}`)) as { status: string },
-      jobs: async (owner, repo, runId) => {
-        const out: GitHubJob[] = [];
-        for (let page = 1; page <= 10; page++) {
-          const r = (await get(`/repos/${owner}/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`)) as { jobs: GitHubJob[] };
-          out.push(...r.jobs);
-          if (r.jobs.length < 100) break;
-        }
-        return out;
-      },
-    };
+  return {
+    installationId,
+    repositories: async () =>
+      (await pages<{ full_name: string; archived?: boolean; disabled?: boolean }>('/installation/repositories', 'repositories', 20))
+        .filter((r) => !r.archived && !r.disabled)
+        .map((r) => r.full_name),
+    activeRuns: async (repo) => {
+      const ids = new Set<number>();
+      for (const status of ['queued', 'in_progress']) {
+        for (const r of await pages<{ id: number }>(`/repos/${repo}/actions/runs?status=${status}`, 'workflow_runs', 3)) ids.add(r.id);
+      }
+      return [...ids];
+    },
+    jobs: (repo, runId) => pages<GitHubJob>(`/repos/${repo}/actions/runs/${runId}/jobs?filter=latest`, 'jobs', 10),
+    runners: async () => {
+      try {
+        return (await pages<{ name: string; status: string; busy: boolean; labels: { name: string }[] }>(`/orgs/${org}/actions/runners`, 'runners', 10)).map((r) => ({
+          name: r.name,
+          status: r.status,
+          busy: r.busy,
+          labels: r.labels.map((l) => l.name),
+        }));
+      } catch (e) {
+        // The App may not be allowed to list the organisation's runners: then only the starting ones count.
+        if ((e as { status?: number }).status === 403 || (e as { status?: number }).status === 404) return undefined;
+        throw e;
+      }
+    },
   };
+}
+
+// ---- the state machine
+
+async function runningExecutions(sfn: SFNClient, target: Target): Promise<Execution[]> {
+  const out: Execution[] = [];
+  let token: string | undefined;
+  do {
+    const page = await sfn.send(new ListExecutionsCommand({ stateMachineArn: target.stateMachineArn, statusFilter: ExecutionStatus.RUNNING, maxResults: 100, nextToken: token }));
+    token = page.nextToken;
+    for (const e of page.executions ?? []) {
+      const d = await sfn.send(new DescribeExecutionCommand({ executionArn: e.executionArn }));
+      try {
+        out.push({ name: e.name ?? '', startMs: e.startDate?.getTime() ?? 0, input: JSON.parse(d.input ?? '{}') as RunnerInput });
+      } catch {
+        /* not one of the webhook's */
+      }
+    }
+  } while (token);
+  return out;
+}
+
+/** The execution ARN of a name in a state machine. */
+export function executionArn(stateMachineArn: string, name: string): string {
+  return stateMachineArn.replace(':stateMachine:', ':execution:') + `:${name}`;
+}
+
+/**
+ * The attempt to name the next runner of a job: the first attempt number with no execution
+ * yet (executions keep their names for 90 days, so a name is never started twice). A job
+ * still queued with its earlier attempts over, or running but too old to be starting (a
+ * runner that never took the job), gets the next attempt. Returns undefined when the job has
+ * had all its attempts, so a job nobody can serve (a repository outside the runner group) is
+ * not started for forever.
+ */
+export async function nextAttempt(
+  sfn: Pick<SFNClient, 'send'>,
+  stateMachineArn: string,
+  repo: string,
+  jobId: number,
+  maxAttempts: number,
+): Promise<number | undefined> {
+  for (let k = 0; k < maxAttempts; k++) {
+    try {
+      await sfn.send(new DescribeExecutionCommand({ executionArn: executionArn(stateMachineArn, executionName(repo, jobId, k)) }));
+    } catch (e) {
+      if (e instanceof ExecutionDoesNotExist || (e as { name?: string }).name === 'ExecutionDoesNotExist') return k;
+      throw e;
+    }
+  }
+  return undefined;
+}
+
+async function runningTasks(ecs: ECSClient, clusterArn: string): Promise<number> {
+  let n = 0;
+  let token: string | undefined;
+  do {
+    const page = await ecs.send(new ListTasksCommand({ cluster: clusterArn, nextToken: token }));
+    n += page.taskArns?.length ?? 0;
+    token = page.nextToken;
+  } while (token);
+  return n;
 }
 
 // ---- the handler
@@ -309,42 +431,136 @@ async function secretsOf(t: Target): Promise<{ domain?: string; appId: string; p
   return { domain: g.domain, appId: String(g.appId), privateKey: key.SecretString };
 }
 
+/** Runs `fn` over `items`, `width` at a time, stopping early when `stop()` says so. */
+export async function pool<T>(items: T[], width: number, stop: () => boolean, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length && !stop()) {
+      const item = items[next++];
+      await fn(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker));
+}
+
+interface Scan {
+  repositories: number;
+  runs: number;
+  queued: Queued[];
+  free: Free[];
+  truncated: boolean;
+}
+
+async function scan(t: Target, c: RequeueConfig, github: GitHub, budget: Budget, deadlineMs: number, nowMs: number): Promise<Scan> {
+  const repositories = await github.repositories();
+  const found: { repository: string; job: GitHubJob }[] = [];
+  let runs = 0;
+  let truncated = false;
+  const stop = () => {
+    const out = Date.now() > deadlineMs || (budget.remaining !== undefined && budget.remaining < 300);
+    if (out) truncated = true;
+    return out;
+  };
+  await pool(repositories, 6, stop, async (repository) => {
+    try {
+      for (const runId of await github.activeRuns(repository)) {
+        if (stop()) return;
+        runs++;
+        for (const job of await github.jobs(repository, runId)) if (job.status === 'queued') found.push({ repository, job });
+      }
+    } catch (e) {
+      // One repository's failure does not hide the others'.
+      console.error(JSON.stringify({ notice: 'Requeue: a repository could not be read', org: t.org, repository, error: String(e) }));
+    }
+  });
+  const queued = candidates(found, { org: t.org, providers: t.providers, installationId: github.installationId }, c, nowMs);
+  const running = await runningExecutions(sfn, t);
+  const free = freeRunners(running, await github.runners(), nowMs, c.startingMinutes * 60_000);
+  return { repositories: repositories.length, runs, queued, free, truncated };
+}
+
 export async function handler(): Promise<{ started: number }> {
   const c = loadConfig(process.env);
   const now = Date.now();
-  let started = 0;
-  let tasks: number | undefined;
+  const deadline = now + c.budgetMs;
   const failed: string[] = [];
+  const rescue: Queued[] = [];
+  const stateMachines = new Map(c.targets.map((t) => [t.org, t.stateMachineArn]));
   for (const t of c.targets) {
+    const budget: Budget = { calls: 0 };
     try {
-      const endedRunners = await ended(sfn, t, now - c.windowMinutes * 60_000);
-      if (endedRunners.length === 0) continue;
-      const counts = await running(sfn, t);
-      const github = gitHubFor(await secretsOf(t));
-      // One GitHub client per installation; a run belongs to one.
-      const byInstallation = new Map<number, Ended[]>();
-      for (const e of endedRunners) byInstallation.set(e.input.installationId, [...(byInstallation.get(e.input.installationId) ?? []), e]);
-      for (const [installationId, list] of byInstallation) {
-        const { starts, notes } = await plan(list, counts, github(installationId), now, c.maxJobAgeMinutes * 60_000);
-        for (const n of notes) console.log(JSON.stringify({ ...n, org: t.org }));
-        for (const s of starts) {
-          tasks ??= await runningTasks(ecs, c.clusterArn);
-          if (tasks >= c.maxConcurrentTasks) {
-            console.log(JSON.stringify({ notice: 'Task cap reached, the job waits for the next round', org: t.org, jobId: s.input.jobId, tasks }));
-            break;
-          }
-          await sfn.send(new StartExecutionCommand({ stateMachineArn: t.stateMachineArn, name: s.name, input: JSON.stringify(s.input) }));
-          tasks++;
-          started++;
-          console.log(JSON.stringify({ notice: 'Started a runner for a queued job', org: t.org, execution: s.name, jobId: s.input.jobId, jobUrl: s.input.jobUrl, labels: s.input.jobLabels }));
-        }
-      }
+      const github = await gitHubFor(t.org, await secretsOf(t), budget);
+      const s = await scan(t, c, github, budget, deadline, now);
+      const left = uncovered(s.queued, s.free);
+      rescue.push(...left);
+      console.log(
+        JSON.stringify({
+          notice: 'Requeue round',
+          org: t.org,
+          repositories: s.repositories,
+          runs: s.runs,
+          queuedJobs: s.queued.length,
+          freeRunners: s.free.length,
+          idle: s.free.filter((f) => f.kind === 'idle').length,
+          withoutRunner: left.length,
+          githubCalls: budget.calls,
+          rateRemaining: budget.remaining,
+          truncated: s.truncated,
+        }),
+      );
     } catch (e) {
       // One organisation's failure does not stop the others; the function's errors alarm.
       console.error(JSON.stringify({ notice: 'Requeue failed', org: t.org, error: String(e) }));
       failed.push(t.org);
     }
   }
-  if (failed.length > 0) throw new Error(`requeue failed for ${failed.join(', ')} (started ${started})`);
+  // Oldest first across organisations, so the wait is fair; the task cap holds.
+  rescue.sort((a, b) => Date.parse(a.job.created_at) - Date.parse(b.job.created_at));
+  let started = 0;
+  let tasks: number | undefined;
+  for (const q of rescue) {
+    const smArn = stateMachines.get(q.org)!;
+    try {
+      tasks ??= await runningTasks(ecs, c.clusterArn);
+      if (tasks >= c.maxConcurrentTasks) {
+        console.log(JSON.stringify({ notice: 'Task cap reached, the jobs left wait for the next round', waiting: rescue.length - started, tasks, cap: c.maxConcurrentTasks }));
+        break;
+      }
+      const attempt = await nextAttempt(sfn, smArn, q.repository.split('/')[1], q.job.id, c.maxAttempts);
+      if (attempt === undefined) {
+        console.log(JSON.stringify({ notice: 'A queued job has had its runners and still waits', org: q.org, repository: q.repository, jobId: q.job.id, jobUrl: q.job.html_url, attempts: c.maxAttempts }));
+        continue;
+      }
+      const name = executionName(q.repository.split('/')[1], q.job.id, attempt);
+      try {
+        await sfn.send(new StartExecutionCommand({ stateMachineArn: smArn, name, input: JSON.stringify(runnerInput(q, c.maxIdleSeconds)) }));
+      } catch (e) {
+        if (e instanceof ExecutionAlreadyExists || (e as { name?: string }).name === 'ExecutionAlreadyExists') continue;
+        throw e;
+      }
+      tasks++;
+      started++;
+      console.log(
+        JSON.stringify({
+          notice: 'Started a runner for a queued job',
+          org: q.org,
+          repository: q.repository,
+          runId: q.job.run_id,
+          jobId: q.job.id,
+          job: q.job.name,
+          jobUrl: q.job.html_url,
+          labels: q.job.labels.join(','),
+          provider: q.provider,
+          queuedSeconds: Math.round((now - Date.parse(q.job.created_at)) / 1000),
+          attempt: attempt + 1,
+          execution: name,
+        }),
+      );
+    } catch (e) {
+      console.error(JSON.stringify({ notice: 'Requeue could not start a runner', org: q.org, jobId: q.job.id, error: String(e) }));
+      failed.push(q.org);
+    }
+  }
+  if (failed.length > 0) throw new Error(`requeue failed for ${[...new Set(failed)].join(', ')} (started ${started})`);
   return { started };
 }

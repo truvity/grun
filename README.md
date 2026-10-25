@@ -32,8 +32,8 @@ What it builds, in short:
   task role per organisation whose policies come from the configuration. A
   shape on Spot (`shapes[].spot`) is a trial for jobs a rerun absorbs: **a Spot
   interruption stops the task and fails the job, GitHub does not retry it, and
-  the requeue (`runner.requeue`) starts a runner only for a job that never got
-  one**, so such a job needs a rerun. Never use it on a stable tier.
+  the requeue (`runner.requeue`) starts a runner only for a job that is still
+  queued**, so such a job needs a rerun. Never use it on a stable tier.
 - **Runner image**: cdk-github-runners' CodeBuild image builder (Linux arm64)
   on top of [ci-plane](https://github.com/truvity/ci-plane)'s runner image, taken
   through the account's ECR pull-through cache, plus the runner layout, job

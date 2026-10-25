@@ -577,11 +577,54 @@ describe('requeue', () => {
     ]);
   });
 
+  it('gives the function the routing, the idle timeout and every organisation\'s providers', () => {
+    const [, f] = fn(s.json)!;
+    const env = f.Properties.Environment.Variables;
+    expect(env.SHAPE_LABELS).toBe('fg-xsmall,fg-small,fg-medium,fg-medium-spot,fg-large,fg-xlarge');
+    expect(env.IDLE_TIMEOUT_SECONDS).toBe(String((s.config.runner?.idleTimeoutMinutes ?? 5) * 60));
+    expect(JSON.parse(env.ALLOW_LIST)).toHaveProperty('acme');
+    const targets = text(env.TARGETS);
+    expect(targets).toContain('grun-example/acme/fg-xsmall');
+    expect(targets).toContain('grun-example/widgets/fg-medium-spot');
+    expect(f.Properties.Timeout).toBe(240);
+  });
+
   it('is left out with runner.requeue false', () => {
     const t = synth((c) => {
       c.runner!.requeue = false;
     });
     expect(fn(t.json)).toBeUndefined();
+  });
+});
+
+describe('the idle reaper', () => {
+  // cdk-github-runners queues every runner for the reaper with a fixed ten-minute delivery delay
+  // and a one-minute batching window, so an idle runner lived 10 to 11 minutes whatever the
+  // idle timeout. The stack sets the delay to the idle timeout plus a minute and no window.
+  const queues = (json: any) => resources(json, 'AWS::SQS::Queue').filter(([id]) => /IdleReaperQueue/.test(id));
+  const mappings = (json: any) => resources(json, 'AWS::Lambda::EventSourceMapping').filter(([id]) => /IdleReaper/.test(id));
+
+  it('looks at a runner one minute after the idle timeout, not after ten, and does not batch', () => {
+    const t = synth((c) => {
+      c.runner!.idleTimeoutMinutes = 2;
+    });
+    const q = queues(t.json);
+    expect(q).toHaveLength(2); // one per organisation
+    for (const [id, r] of q) expect(r.Properties.DelaySeconds, id).toBe(180);
+    const m = mappings(t.json);
+    expect(m).toHaveLength(2);
+    for (const [id, r] of m) expect(r.Properties.MaximumBatchingWindowInSeconds, id).toBe(0);
+  });
+
+  it('follows the library\'s five-minute default when no idle timeout is set, and caps at SQS\'s 15 minutes', () => {
+    const t = synth((c) => {
+      delete c.runner!.idleTimeoutMinutes;
+    });
+    for (const [, r] of queues(t.json)) expect(r.Properties.DelaySeconds).toBe(360);
+    const long = synth((c) => {
+      c.runner!.idleTimeoutMinutes = 30;
+    });
+    for (const [, r] of queues(long.json)) expect(r.Properties.DelaySeconds).toBe(900);
   });
 });
 
