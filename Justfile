@@ -1,6 +1,7 @@
 # grun: GitHub Actions runners on AWS ECS Fargate (cdk-github-runners):
 # a CDK app (TypeScript, cdk/), the ci-measure tool (Go, cmd/) and the
-# permissions-boundary package (Go, boundary/, its own module).
+# permissions-boundary package (Go, boundary/, its own module) and the
+# config schema's Go validator (cdk/config/, its own module).
 # `just --list` for an overview.
 
 # Disable go.work (a parent workspace interferes with standalone builds)
@@ -13,15 +14,17 @@ default:
 fmt:
     golangci-lint fmt ./cmd/...
     cd boundary && golangci-lint fmt ./...
+    cd cdk/config && golangci-lint fmt ./...
 
 # Compile check; writes the binary to bin/ci-measure
 build:
     go build -o bin/ci-measure ./cmd/ci-measure
 
-# Run unit tests (ci-measure, then the boundary module)
+# Run unit tests (ci-measure, then the boundary and config modules)
 test:
     go test ./cmd/...
     cd boundary && go test ./...
+    cd cdk/config && go test ./...
 
 # Run linters. `config verify` first: `run` accepts unknown top-level keys
 # silently, so a settings block in the wrong place is otherwise invisible.
@@ -29,11 +32,13 @@ lint:
     golangci-lint config verify
     golangci-lint run ./cmd/...
     cd boundary && golangci-lint run ./...
+    cd cdk/config && golangci-lint run ./...
 
 # Go vulnerability check
 vuln:
     govulncheck ./cmd/...
     cd boundary && govulncheck ./...
+    cd cdk/config && govulncheck ./...
 
 # Why this repository can be public: no particulars in the tree. Own CI job.
 leak-canary:
