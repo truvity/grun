@@ -28,8 +28,8 @@ sluis:                  # where the GitHub Apps come from
   syncIntervalMinutes: 5
 
 runnerImage:
-  # Base image through the account's ECR pull-through cache.
-  repository: account-id.dkr.ecr.eu-central-1.amazonaws.com/ghcr/example-org/ci-plane/runner
+  # Base image (ghcr.io/truvity/grun/runner) through the account's ECR pull-through cache.
+  repository: account-id.dkr.ecr.eu-central-1.amazonaws.com/ghcr/example-org/grun/runner
   version: v0.0.0
   runnerVersion: latest
   rebuildIntervalDays: 7

@@ -35,9 +35,9 @@ export interface RunnerImageProps {
 
 /**
  * The runner image, built by cdk-github-runners' CodeBuild image builder
- * (Linux, arm64) on top of ci-plane's runner image.
+ * (Linux, arm64) on top of this repository's runner image (image/runner/).
  *
- * ci-plane keeps owning the content: nix, devbox, the docker client, git-lfs.
+ * image/runner/ owns the content: nix, devbox, the docker client, git-lfs.
  * The builder's components add what its container contract needs: the runner
  * layout and the job hooks (githubRunner), the packages the hooks use
  * (requiredPackages), the CloudWatch agent, and the private CA. The runner

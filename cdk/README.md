@@ -40,8 +40,8 @@ configuration names them):
    your own, listed in `network.securityGroupIds`) on the other side.
 2. The permissions boundary policy (default name `pb@tech-grun`) in the account. The Go module `boundary/` renders the document, and the bootstrap roles' own boundary; see "Permissions boundaries" in the root README.
    CDK itself must be bootstrapped for the qualifier in `cdk.qualifier`, with the Deploy boundary on every bootstrap role (root README, "The bootstrap"): the estate deploys it, and CDK's own template leaves four of the five bootstrap roles without the boundary.
-3. An ECR pull-through cache for the registry that holds ci-plane's runner
-   image, and the image tag named in `runnerImage.version`.
+3. An ECR pull-through cache for the registry that holds the runner image
+   (`ghcr.io/truvity/grun/runner`, built from `image/runner/` here on a `v*` tag), and the image tag named in `runnerImage.version`.
 4. For each organisation: an ACM certificate for its webhook domain in the stack
    region; the GitHub App created and installed (its credentials in the SSM
    parameter named by `sluisParameter`); and a reader role in the account that
@@ -95,7 +95,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `sluis.readerRoleArn` | required | role the sync Lambda assumes |
 | `sluis.region` | stack region | region of the SSM parameters |
 | `sluis.syncIntervalMinutes` | 5 | sync schedule; keep it well under 30 (see below) |
-| `runnerImage.repository` | required | `<account>.dkr.ecr.<region>.amazonaws.com/<cache prefix>/<path>` of ci-plane's runner image |
+| `runnerImage.repository` | required | `<account>.dkr.ecr.<region>.amazonaws.com/<cache prefix>/<path>` of the runner image (the cache prefix maps to `ghcr.io`, so `<prefix>/truvity/grun/runner` is `ghcr.io/truvity/grun/runner`) |
 | `runnerImage.version` | required | its tag; changing it rebuilds the image on the next deploy |
 | `runnerImage.runnerVersion` | `latest` | GitHub runner version baked in |
 | `runnerImage.rebuildIntervalDays` | 7 | scheduled rebuild (0 disables); keep it well under GitHub's 30-day limit on old runners |

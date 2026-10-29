@@ -40,6 +40,13 @@ vuln:
     cd boundary && govulncheck ./...
     cd cdk/config && govulncheck ./...
 
+# Runner image: the entrypoint script's syntax and its behaviour as a
+# non-root user (needs bash and openssl). The image build itself runs in
+# release.yaml on a tag.
+image-test:
+    bash -n image/runner/runner-extra-ca.sh hack/extra-ca-cases.sh
+    bash hack/extra-ca-cases.sh
+
 # Why this repository can be public: no particulars in the tree. Own CI job.
 leak-canary:
     hack/leak-canary.sh
@@ -83,4 +90,4 @@ cdk-synth-config CONFIG: cdk-install
     c=$(realpath "{{CONFIG}}") && cd cdk && npx cdk synth --quiet -c config="$c"
 
 # All the checks CI runs
-check: build test lint vuln leak-canary cdk-build cdk-test cdk-synth
+check: build test lint vuln leak-canary image-test cdk-build cdk-test cdk-synth

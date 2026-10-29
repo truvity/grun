@@ -1,0 +1,93 @@
+# Release: a v* tag publishes the runner image (image/runner/) as a
+# multi-arch manifest list, ghcr.io/truvity/grun/runner:<tag>.
+#
+# Tag creation is restricted by ruleset: who can tag is who can publish.
+# Nothing rebuilds on a schedule and nothing publishes from a PR or a
+# master merge. The module tags (boundary/v*, cdk/config/v*) do not match
+# v* and publish nothing here.
+#
+# Two stages. The heavy Dockerfile (apt, nix, devbox, the docker toolchain)
+# is built once per architecture on a NATIVE runner (arm64 on
+# ubuntu-24.04-arm), so nothing runs under QEMU and nix's seccomp filter
+# loads as it does on the hardware the image runs on. Then the two halves
+# are merged into one manifest list under the release tag.
+#
+# Consumers pin the tag (the CDK app's runnerImage.version) or the digest
+# the run summary prints.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/truvity/grun/runner
+
+jobs:
+  build:
+    name: build-${{ matrix.arch }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Login to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Build and push the per-arch image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            --file image/runner/Dockerfile \
+            --label "org.opencontainers.image.title=the GitHub Actions runner" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --tag "${IMAGE}:${GITHUB_REF_NAME}-${{ matrix.arch }}" \
+            --cache-from "type=registry,ref=${IMAGE}:cache-${{ matrix.arch }}" \
+            --cache-to   "type=registry,ref=${IMAGE}:cache-${{ matrix.arch }},mode=max" \
+            --push \
+            image/runner/
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Login to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Merge the native halves into the release tag
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${GITHUB_REF_NAME}" \
+            "${IMAGE}:${GITHUB_REF_NAME}-amd64" \
+            "${IMAGE}:${GITHUB_REF_NAME}-arm64"
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}" \
+                     --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "runner image \`${IMAGE}:${GITHUB_REF_NAME}\` digest: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"

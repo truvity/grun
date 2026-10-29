@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>truvity/ci-workflows"
+  ],
+  "description": "Version ARGs in the runner image Dockerfile, each annotated with a `# renovate:` line directly above it. A pin without one is invisible.",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "image/**/Dockerfile"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)(?: versioning=(?<versioning>[a-z-]+))?\\s+ARG [A-Z_]+_VERSION=(?<currentValue>[^\\s]+)"
+      ]
+    }
+  ]
+}

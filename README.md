@@ -8,6 +8,7 @@ GitHub Actions self-hosted runners on AWS ECS Fargate, deployed with
 |---|---|---|
 | `cmd/ci-measure` | available | Go tool: start latency, duration, minutes, step breakdown and estimated cost of workflow jobs, read from the GitHub REST API |
 | [`cdk/`](cdk/README.md) | available | CDK app (TypeScript): the cdk-github-runners deployment for ECS Fargate, its runner image, the GitHub App secret sync, cost guards |
+| [`image/runner/`](image/runner/Dockerfile) | available | The GitHub Actions runner image (nix, devbox, docker client, git-lfs, gh), published multi-arch as `ghcr.io/truvity/grun/runner:<tag>` on a `v*` tag; the CDK app builds its Fargate image on top of it |
 | [`boundary/`](boundary) | available | Go module `github.com/truvity/grun/boundary` (its only dependency is the standard-library-only `aws-structure/policy` module): the IAM permissions boundaries the stack needs, as policy documents generated from parameters |
 
 This repository is public and generic. It holds mechanism only: account ids,
@@ -35,9 +36,10 @@ What it builds, in short:
   the requeue (`runner.requeue`) starts a runner only for a job that is still
   queued**, so such a job needs a rerun. Never use it on a stable tier.
 - **Runner image**: cdk-github-runners' CodeBuild image builder (Linux arm64)
-  on top of [ci-plane](https://github.com/truvity/ci-plane)'s runner image, taken
+  on top of the runner image this repository builds (`image/runner/`,
+  published as `ghcr.io/truvity/grun/runner` on a `v*` tag), taken
   through the account's ECR pull-through cache, plus the runner layout, job
-  hooks, CloudWatch agent and (optionally) a private CA. A new ci-plane version
+  hooks, CloudWatch agent and (optionally) a private CA. A new image version
   in the configuration rebuilds the image on the next deploy; a weekly schedule
   keeps the GitHub runner current. cdk-github-runners indexes the pushed image
   for SOCI.
