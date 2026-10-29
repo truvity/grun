@@ -410,9 +410,9 @@ describe('runner image', () => {
     expect(project().VpcConfig).toBeUndefined();
   });
 
-  it('builds from the ci-plane image through the pull-through cache, at the configured version', () => {
+  it('builds from the grun runner image through the pull-through cache, at the configured version', () => {
     const spec = text(project().Source.BuildSpec);
-    expect(spec).toContain('FROM account-id.dkr.ecr.eu-central-1.amazonaws.com/ghcr/example-org/ci-plane/runner:v0.0.0');
+    expect(spec).toContain('FROM account-id.dkr.ecr.eu-central-1.amazonaws.com/ghcr/example-org/grun/runner:v0.0.0');
   });
 
   it('works as root and hands back to the runner user', () => {
@@ -460,7 +460,7 @@ describe('runner image', () => {
     expect(text(resources(t.json, 'AWS::CodeBuild::Project')[0][1].Properties.Source.BuildSpec)).toContain('update-ca-certificates');
   });
 
-  it('rebuilds when the configured ci-plane version changes', () => {
+  it('rebuilds when the configured runner image version changes', () => {
     const waitHandles = (json: any) => resources(json, 'AWS::CloudFormation::WaitConditionHandle').map(([id]) => id);
     const before = waitHandles(s.json);
     const after = waitHandles(
@@ -481,7 +481,7 @@ describe('runner image', () => {
   it('lets the build pull through the cache', () => {
     const docs = text(resources(s.json, 'AWS::IAM::Policy').filter(([id]) => id.startsWith('RunnerImageBuilderRole')));
     expect(docs).toContain('ecr:BatchImportUpstreamImage');
-    expect(docs).toContain('ghcr/example-org/ci-plane/runner');
+    expect(docs).toContain('ghcr/example-org/grun/runner');
   });
 });
 

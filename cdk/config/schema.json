@@ -85,7 +85,7 @@
           "pattern": "^[a-z0-9-]+\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
         },
         "version": {
-          "description": "Tag of the ci-plane runner image. Changing it rebuilds the runner image on the next deploy.",
+          "description": "Tag of the runner image (ghcr.io/truvity/grun/runner, built from image/runner in this repository). Changing it rebuilds the runner image on the next deploy.",
           "type": "string",
           "minLength": 1
         },
