@@ -15,7 +15,7 @@
   "dependencies": {
     "@cloudsnorkel/cdk-github-runners": "0.17.1",
     "ajv": "8.20.0",
-    "aws-cdk-lib": "2.274.0",
+    "aws-cdk-lib": "2.275.0",
     "constructs": "10.8.1",
     "yaml": "2.9.1"
   },
