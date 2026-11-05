@@ -1,0 +1,6 @@
+# The base every CI lint of arc-runners starts from: the two facts the
+# chart refuses to render without (the organization and the controller's
+# namespace).
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system

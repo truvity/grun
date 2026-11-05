@@ -1,0 +1,7 @@
+# refuses: /packing/weight
+# A preferred term's weight is 1..100.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+packing:
+  weight: 101

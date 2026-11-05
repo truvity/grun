@@ -1,0 +1,400 @@
+{{- if not .Values.githubConfigUrl }}{{ fail "githubConfigUrl is required" }}{{ end }}
+{{- /*
+awsConfig and projectedServiceAccountTokens are release-wide only (no
+per-scale-set override, unlike extraEnv/extraEnvFrom above) — one
+runner-shaped credential path, not one per scale set. Checked here
+because the schema cannot express either: a cross-key constraint
+(awsConfig vs. a NAMED extraEnv entry) and a cross-item one (no two
+projected tokens sharing a mount path).
+*/}}
+{{- if .Values.awsConfig.enabled }}
+{{- if not .Values.awsConfig.profile }}{{ fail "awsConfig.profile is required when awsConfig.enabled" }}{{ end }}
+{{- if not .Values.awsConfig.credentialProcess }}{{ fail "awsConfig.credentialProcess is required when awsConfig.enabled" }}{{ end }}
+{{- range $e := .Values.extraEnv }}
+{{- if eq $e.name "AWS_ACCESS_KEY_ID" }}{{ fail "awsConfig.enabled with an extraEnv entry named AWS_ACCESS_KEY_ID: the AWS SDK's own credential chain checks environment variables BEFORE a config file's credential_process, so this static key would silently keep winning over the broker-minted one -- drop it (and its extraEnvFrom Secret, if that is where it comes from) before enabling awsConfig; the two are alternatives for the same job-scoped credential, never both at once" }}{{ end }}
+{{- end }}
+{{- end }}
+{{- if .Values.projectedServiceAccountTokens }}
+{{- $seenPaths := dict }}
+{{- range $i, $t := .Values.projectedServiceAccountTokens }}
+{{- if hasKey $seenPaths $t.path }}{{ fail (printf "projectedServiceAccountTokens[%d]: path %q is already used by another entry -- the kubelet projects every source into ONE directory, so a second entry naming the same path would silently replace the first at apply time" $i $t.path) }}{{ end }}
+{{- $_ := set $seenPaths $t.path true }}
+{{- end }}
+{{- end }}
+{{- $root := . }}
+{{- range $name, $p := .Values.scaleSets }}
+{{- /*
+The CRs are rendered DIRECTLY rather than through the upstream
+gha-runner-scale-set chart: the controller and that chart share a
+version stream, and bundling the chart here would let the two drift.
+The CR API (actions.github.com/v1alpha1) is the contract with the
+controller; labels and the manager Role/RoleBinding mirror what the
+upstream chart creates. The values-hash annotation changes whenever
+this set's rendered inputs change, which is what prompts the
+controller to recycle the listener — same mechanism as upstream.
+*/}}
+{{- /* hasKey, NOT `| default`: sprig's default treats 0 as empty, so a
+     profile asking for minRunners 0 (a deliberately COLD set) silently
+     rendered as the chart default 1 — the same bool-false trap that bit
+     renderFleet. maxRunners keeps `default` because 0 there is
+     meaningless (a set that can never run a job). */}}
+{{- $min := $root.Values.minRunners }}
+{{- if hasKey $p "minRunners" }}{{ $min = $p.minRunners }}{{ end }}
+{{- /*
+Per-scale-set overrides, each REPLACING the release-wide value
+(not merging into it — a map or list has one obvious "unset" state,
+empty, and a deep merge would leave no way to ask for that) when the
+key is present on this scale set at all. hasKey again, not `default`:
+an explicit `nodeSelector: {}` or `extraEnv: []` on one set must render
+as "nothing", not fall back to the release-wide value because an empty
+map/list looks unset to sprig's `default`. */}}
+{{- $nodeSelector := $root.Values.nodeSelector }}
+{{- if hasKey $p "nodeSelector" }}{{ $nodeSelector = $p.nodeSelector }}{{ end }}
+{{- $tolerations := $root.Values.tolerations }}
+{{- if hasKey $p "tolerations" }}{{ $tolerations = $p.tolerations }}{{ end }}
+{{- $podAnnotations := $root.Values.podAnnotations }}
+{{- if hasKey $p "podAnnotations" }}{{ $podAnnotations = $p.podAnnotations }}{{ end }}
+{{- $extraEnv := $root.Values.extraEnv }}
+{{- if hasKey $p "extraEnv" }}{{ $extraEnv = $p.extraEnv }}{{ end }}
+{{- $extraEnvFrom := $root.Values.extraEnvFrom }}
+{{- if hasKey $p "extraEnvFrom" }}{{ $extraEnvFrom = $p.extraEnvFrom }}{{ end }}
+{{- /*
+nixSandbox is per-set only — there is no release-wide default to fall
+back to, since sandboxing one set says nothing about the others. A
+seccompProfile is required the moment enabled is true: an admission
+policy or a node can only ever protect a NAMED profile, so an empty
+name here would either fail closed everywhere (nothing to fence) or,
+worse, render a pod that asks the kubelet for a Localhost profile with
+no path — a refusal at the kubelet, far from this chart's own error.
+See docs/nix-sandbox.md for what the profile has to contain and how to
+generate it (hack/gen-nix-sandbox-seccomp.sh). */}}
+{{- $nixSandbox := $p.nixSandbox | default (dict) }}
+{{- if $nixSandbox.enabled }}
+{{- if not $nixSandbox.seccompProfile }}{{ fail (printf "scaleSets.%s.nixSandbox.seccompProfile is required when nixSandbox.enabled" $name) }}{{ end }}
+{{- end }}
+{{- /*
+restricted is per-set only, like nixSandbox: it moves ONE scale
+set's runner pods and their init container onto the
+Pod Security `restricted` profile (non-root with an explicit numeric
+uid, seccomp RuntimeDefault, no privilege escalation, every capability
+dropped). Off by default, and a set that leaves it off renders exactly
+as it did before the key existed. See docs/restricted-runners.md for
+what a job loses.
+*/}}
+{{- $restricted := false }}
+{{- if hasKey $p "restricted" }}
+{{- if not (kindIs "bool" $p.restricted) }}{{ fail (printf "scaleSets.%s.restricted must be true or false, not %q" $name (toString $p.restricted)) }}{{ end }}
+{{- $restricted = $p.restricted }}
+{{- end }}
+{{- $nixConfig := include "arc-runners.nixConfigFor" (dict "root" $root "p" $p) }}
+{{- $nixConfigName := include "arc-runners.nixConfigNameFor" (dict "root" $root "p" $p) }}
+{{- /* The optional keys enter the hash ONLY when this set actually sets
+     them (hasKey / non-empty checks below) — never unconditionally — so
+     a release that uses none of them hashes the same as one written
+     before they existed; that identity is the golden proof for the
+     default case. */}}
+{{- $spec := dict "p" $p "img" (include "arc-runners.runnerImage" $root) "min" $min "max" ($p.maxRunners | default $root.Values.maxRunners) "url" $root.Values.githubConfigUrl "nixConfig" $root.Values.nixConfig }}
+{{- /* The ConfigMap the runner reads NIX_CONFIG from: a content hash of
+     the effective payload, so any change to it (nixCache.url included)
+     recycles the listener with the new reference. */}}
+{{- if $nixConfig }}{{ $_ := set $spec "nixConfigName" $nixConfigName }}{{ end }}
+{{- if hasKey $p "nodeSelector" }}{{ $_ := set $spec "nodeSelector" $nodeSelector }}{{ end }}
+{{- if hasKey $p "tolerations" }}{{ $_ := set $spec "tolerations" $tolerations }}{{ end }}
+{{- if hasKey $p "affinity" }}{{ $_ := set $spec "affinity" $p.affinity }}{{ end }}
+{{- if hasKey $p "podAnnotations" }}{{ $_ := set $spec "podAnnotations" $podAnnotations }}{{ end }}
+{{- if hasKey $p "extraEnv" }}{{ $_ := set $spec "extraEnv" $extraEnv }}{{ end }}
+{{- if hasKey $p "extraEnvFrom" }}{{ $_ := set $spec "extraEnvFrom" $extraEnvFrom }}{{ end }}
+{{- if $p.extraNixConfig }}{{ $_ := set $spec "extraNixConfig" $p.extraNixConfig }}{{ end }}
+{{- if $nixSandbox.enabled }}{{ $_ := set $spec "nixSandbox" $nixSandbox }}{{ end }}
+{{- if $restricted }}{{ $_ := set $spec "restricted" $root.Values.runnerUser }}{{ end }}
+{{- if $root.Values.awsConfig.enabled }}{{ $_ := set $spec "awsConfig" $root.Values.awsConfig }}{{ end }}
+{{- if $root.Values.projectedServiceAccountTokens }}{{ $_ := set $spec "projectedServiceAccountTokens" $root.Values.projectedServiceAccountTokens }}{{ end }}
+{{- if $root.Values.extraVolumes }}{{ $_ := set $spec "extraVolumes" $root.Values.extraVolumes }}{{ end }}
+{{- if $root.Values.extraVolumeMounts }}{{ $_ := set $spec "extraVolumeMounts" $root.Values.extraVolumeMounts }}{{ end }}
+{{- if $root.Values.extraInitContainers }}{{ $_ := set $spec "extraInitContainers" $root.Values.extraInitContainers }}{{ end }}
+{{- /*
+Whether the pod spec carries an initContainers/volumeMounts/volumes key
+at all — each stays OMITTED, not rendered empty, when none of its
+sources are in play, which is what keeps a release using none of these
+hooks byte-identical to one built without them (the golden proof
+for the default case, same rule the keys above already follow for the
+values-hash).
+*/}}
+{{- $hasInitContainers := gt (len $root.Values.extraInitContainers) 0 }}
+{{- $hasVolumeMounts := or $root.Values.awsConfig.enabled (gt (len $root.Values.extraVolumeMounts) 0) (gt (len $root.Values.projectedServiceAccountTokens) 0) }}
+{{- $hasVolumes := or $root.Values.awsConfig.enabled (gt (len $root.Values.extraVolumes) 0) (gt (len $root.Values.projectedServiceAccountTokens) 0) }}
+---
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $name }}
+    app.kubernetes.io/component: autoscaling-runner-set
+    app.kubernetes.io/part-of: gha-rs
+    # The controller's compatibility gate — see values.arcVersion.
+    app.kubernetes.io/version: {{ $root.Values.arcVersion | quote }}
+    actions.github.com/organization: {{ include "arc-runners.org" $root }}
+    actions.github.com/scale-set-name: {{ $name }}
+    actions.github.com/scale-set-namespace: {{ $root.Release.Namespace }}
+  annotations:
+    actions.github.com/runner-group-name: {{ $root.Values.runnerGroup }}
+    actions.github.com/runner-scale-set-name: {{ $name }}
+    actions.github.com/cleanup-manager-role-name: {{ $name }}-gha-rs-manager
+    actions.github.com/cleanup-manager-role-binding: {{ $name }}-gha-rs-manager
+    actions.github.com/values-hash: {{ $spec | toJson | sha256sum | trunc 63 }}
+spec:
+  githubConfigUrl: {{ $root.Values.githubConfigUrl }}
+  githubConfigSecret: {{ $root.Values.githubConfigSecret }}
+  runnerGroup: {{ $root.Values.runnerGroup }}
+  minRunners: {{ $min }}
+  maxRunners: {{ $p.maxRunners | default $root.Values.maxRunners }}
+  listenerTemplate:
+    spec:
+      {{- with $root.Values.listenerTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Every listener runs on the Pod Security `restricted` profile,
+      # whatever the set's `restricted` key says (that key is for the runner
+      # pods). The image's own user is numeric, so runAsNonRoot is checkable.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: listener
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+  template:
+    metadata:
+      {{- if $root.Values.packing.enabled }}
+      # Pod-template labels reach the runner pod verbatim; this one is
+      # what every runner's packing affinity looks for (values.packing).
+      labels:
+        {{- include "arc-runners.packingLabels" $root | nindent 8 }}
+      {{- end }}
+      {{- with $podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $root.Values.runnerServiceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      {{- /*
+      hostUsers: false is the pod-level half of nixSandbox (the other
+      half is the runner container's procMount/seccompProfile below).
+      Only rendered when THIS set asks for it — an unsandboxed set's pod
+      spec carries no hostUsers key at all.
+      Nix's own build sandbox creates a NESTED user namespace per
+      derivation; the pod needs its own first, or the nested one has
+      nowhere to live. See docs/nix-sandbox.md.
+      */}}
+      {{- if $nixSandbox.enabled }}
+      hostUsers: false
+      {{- end }}
+      {{- if $restricted }}
+      # Pod Security `restricted`. The uid is numeric on purpose: the
+      # image's USER is the NAME `runner`, which the kubelet cannot check
+      # against runAsNonRoot. fsGroup makes the pod's emptyDirs (they
+      # mount root-owned) writable by that group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $root.Values.runnerUser.uid }}
+        runAsGroup: {{ $root.Values.runnerUser.gid }}
+        fsGroup: {{ $root.Values.runnerUser.gid }}
+        seccompProfile:
+          type: RuntimeDefault
+      {{- end }}
+      {{- with $nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with include "arc-runners.affinity" (dict "root" $root "p" $p) }}
+      affinity:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- if $hasInitContainers }}
+      initContainers:
+        {{- with $root.Values.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: runner
+          image: {{ include "arc-runners.runnerImage" $root }}
+          command: ["/home/runner/run.sh"]
+          {{- with $extraEnvFrom }}
+          # Credentials the runner needs that this chart must not know: an
+          # object store with no pod identity wants an access key, and the
+          # right place for it is a Secret in the cluster -- delivered by
+          # whatever the operator uses -- rather than a repository secret in
+          # GitHub. envFrom rather than named entries, so a provider that
+          # reads three variables needs no chart change to read a fourth.
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $nixSandbox.enabled }}
+          # procMount/seccomp are the container-level half of nixSandbox;
+          # hostUsers above is the pod-level half. Baseline pod security
+          # allows procMount: Unmasked only because hostUsers is false
+          # (Kubernetes >=1.35's check_procMount_baseline.go) -- the two
+          # always render together, never one without the other. The
+          # profile itself must already exist on every node this set can
+          # land on (docs/nix-sandbox.md, hack/gen-nix-sandbox-seccomp.sh)
+          # and, ideally, be fenced so only this set's pods can name it
+          # (values.nixSandbox.fence.enabled) -- baseline PSA allows ANY
+          # Localhost profile to ANY pod on the node that has the file.
+          {{- end }}
+          {{- if or $nixSandbox.enabled $restricted }}
+          securityContext:
+            {{- if $restricted }}
+            runAsNonRoot: true
+            runAsUser: {{ $root.Values.runnerUser.uid }}
+            runAsGroup: {{ $root.Values.runnerUser.gid }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            {{- end }}
+            {{- if $nixSandbox.enabled }}
+            procMount: Unmasked
+            seccompProfile:
+              type: Localhost
+              localhostProfile: {{ $nixSandbox.seccompProfile | quote }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: GOMAXPROCS
+              value: {{ $p.gomaxprocs | quote }}
+            {{- with $extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if $nixConfig }}
+            - name: NIX_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $nixConfigName }}
+                  key: nix.conf
+            {{- end }}
+            {{- if $root.Values.awsConfig.enabled }}
+            # JOB-scoped, not CLIENT-scoped: an ephemeral runner's `runner`
+            # container is the one place every step of ONE job runs, so
+            # AWS_PROFILE here is the default for any `aws`/SDK call that
+            # job makes, not only the Go cache client this exists for. A
+            # step that needs a DIFFERENT AWS identity in the same job sets
+            # its own AWS_PROFILE (or --profile) to override this default,
+            # exactly as it would override any other environment default.
+            # See values.yaml's awsConfig comment for the render-time
+            # refusal that catches the opposite direction: a static
+            # AWS_ACCESS_KEY_ID left in extraEnv, which would silently
+            # outrank this profile rather than the other way around.
+            - name: AWS_CONFIG_FILE
+              value: /var/run/aws-config/config
+            - name: AWS_PROFILE
+              value: {{ $root.Values.awsConfig.profile | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          {{- if $hasVolumeMounts }}
+          volumeMounts:
+            {{- if $root.Values.awsConfig.enabled }}
+            - name: aws-config
+              mountPath: /var/run/aws-config
+              readOnly: true
+            {{- end }}
+            {{- if $root.Values.projectedServiceAccountTokens }}
+            - name: extra-tokens
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
+            {{- end }}
+            {{- with $root.Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if $hasVolumes }}
+      volumes:
+        {{- if $root.Values.awsConfig.enabled }}
+        - name: aws-config
+          configMap:
+            name: runner-aws-config
+        {{- end }}
+        {{- if $root.Values.projectedServiceAccountTokens }}
+        # 0444: read by whatever job-side code the operator points at this
+        # path, and the runner container does not run as root. ONE volume, several sources: the kubelet projects every
+        # source of one projected volume into the same directory, which is
+        # exactly why two entries may not share a `path` (refused above).
+        - name: extra-tokens
+          projected:
+            defaultMode: 0444
+            sources:
+              {{- range $t := $root.Values.projectedServiceAccountTokens }}
+              - serviceAccountToken:
+                  audience: {{ $t.audience | quote }}
+                  path: {{ $t.path | quote }}
+                  {{- if $t.expirationSeconds }}
+                  expirationSeconds: {{ $t.expirationSeconds }}
+                  {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with $root.Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+---
+# The controller's per-scale-set manager Role — mirrors the upstream
+# chart: the controller SA needs these in the runner namespace to run
+# ephemeral runners here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-gha-rs-manager
+  labels:
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/instance: {{ $name }}
+    app.kubernetes.io/component: manager-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "delete", "get", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["create", "delete", "get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-gha-rs-manager
+  labels:
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/instance: {{ $name }}
+    app.kubernetes.io/component: manager-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-gha-rs-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ $root.Values.controllerServiceAccount.name }}
+    namespace: {{ $root.Values.controllerServiceAccount.namespace }}
+{{- end }}

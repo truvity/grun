@@ -1,0 +1,40 @@
+{{- /*
+One ConfigMap per DISTINCT effective payload, not one per release and
+not one per scale set. Every scale set without extraNixConfig or
+nixSandbox.enabled shares the SAME object — arc-runners.nixConfigName,
+computed from the release-wide payload alone — so a release that uses
+neither per-set knob renders exactly one ConfigMap. A scale set that sets either gets its own
+content-addressed ConfigMap, keyed so that changing one set's extra
+config, or turning its sandbox on, never touches another set's object
+or forces its listener to recycle (arc-runners.nixConfigNameFor in
+_helpers.tpl carries the full reasoning).
+*/ -}}
+{{- $root := . -}}
+{{- $base := include "arc-runners.nixConfig" $root -}}
+{{- $baseName := include "arc-runners.nixConfigName" $root -}}
+{{- $configs := dict -}}
+{{- if $base -}}
+{{- $_ := set $configs $baseName $base -}}
+{{- end -}}
+{{- range $setName, $p := $root.Values.scaleSets -}}
+{{- if $p -}}
+{{- $name := include "arc-runners.nixConfigNameFor" (dict "root" $root "p" $p) -}}
+{{- if and (ne $name $baseName) (not (hasKey $configs $name)) -}}
+{{- $_ := set $configs $name (include "arc-runners.nixConfigFor" (dict "root" $root "p" $p)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $payload := $configs }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: runner-nix-config
+    app.kubernetes.io/part-of: gha-rs
+data:
+  nix.conf: |
+    {{- $payload | nindent 4 }}
+immutable: true
+{{- end }}

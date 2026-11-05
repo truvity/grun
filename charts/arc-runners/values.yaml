@@ -1,0 +1,502 @@
+# arc-runners — one release per GitHub organization, installed into
+# that organization's runner namespace.
+
+# REQUIRED: the org this release registers against, e.g.
+# https://github.com/<org>. A scale set registers against ONE
+# organization; each org needs its own release, GitHub App secret and
+# namespace.
+githubConfigUrl: ""
+
+# Secret carrying github_app_id / github_app_installation_id /
+# github_app_private_key (delivered by the operator, e.g. by ESO). Shared
+# by every scale set of the release.
+githubConfigSecret: arc-github-app
+
+# REQUIRED to match the INSTALLED ARC controller's version exactly: the
+# controller deletes any AutoscalingRunnerSet whose
+# app.kubernetes.io/version label differs from its build version
+# ("Autoscaling runner set version doesn't match the build version.
+# Deleting the resource."). Feed this from the same pin that installs
+# the controller so the two can never drift.
+arcVersion: "0.14.2"
+
+# The ARC controller's ServiceAccount — this chart grants it the
+# per-scale-set manager Role in the release namespace, exactly as the
+# upstream gha-runner-scale-set chart does.
+#
+# `namespace` is REQUIRED and has no default (values.schema.json): it is
+# wherever YOU installed the controller, and a guessed namespace
+# grants the Role to a ServiceAccount that does not exist -- the scale
+# sets render, and the controller can never manage them. `name` is the
+# upstream controller chart's default for a release named `arc`; change
+# it with the release name.
+controllerServiceAccount:
+  name: arc-gha-rs-controller
+  namespace: ""
+
+# ServiceAccount for the runner pods (plumbing-only identity doctrine:
+# registry pull + caches, nothing else). Created by the operator; empty
+# means the namespace default SA.
+runnerServiceAccountName: ""
+
+# The runner image's login, for scale sets with `restricted: true`.
+# Pod Security's runAsNonRoot needs a NUMERIC uid, and the image's USER is
+# the name `runner`. 1001:1001 is what the upstream actions-runner base
+# image gives that user; an operator building their own runner image on a
+# different uid says so here. Unused by a set that does not ask for
+# `restricted`.
+runnerUser:
+  uid: 1001
+  gid: 1001
+
+# The runner image: this repository's own image/runner, published by the
+# same release as this chart. The release workflow stamps `digest` and
+# `tag` from the image it has just pushed, so a chart version pins one
+# image digest. Consumers override `registry` (a pull-through cache
+# prefix, for example) and inherit the digest. With `digest` empty the
+# tag is rendered instead.
+runnerImage:
+  registry: ghcr.io
+  repository: truvity/grun/runner
+  digest: "" # sha256:… — stamped at release
+  tag: latest # stamped at release with the release tag
+
+# 1, not 0: a warm runner removes the cold-start window (node
+# provisioning + image pull + registration) in which GitHub hands out a
+# job message that no runner is ready to take — the window upstream
+# #4307 turns into a permanent stall. The stall is per SCALE SET, so
+# every profile carries one.
+minRunners: 1
+# A per-set FAIRNESS limit when several releases share one node pool —
+# the most one org can claim before the other queues. The pool's own
+# capacity cap is the real spend ceiling and binds first.
+maxRunners: 8
+
+runnerGroup: Default
+
+# Runtime Nix transfer policy for every ephemeral runner. Rendered as
+# a content-addressed ConfigMap and exposed through NIX_CONFIG, which
+# overrides only the keys named here; the image's nix.conf continues
+# to own the substituter list.
+#
+# Nix 2.35 retries most 5xx responses, including 504, but its 100ms
+# default base delay exhausts five attempts inside a few seconds. This
+# curve (full jitter, 60s ceiling) spans transient CDN failures without
+# making all cold runners retry in lockstep.
+nixConfig: |
+  filetransfer-retry-attempts = 8
+  filetransfer-retry-delay = 5000
+  filetransfer-retry-delay-rate-limited = 10000
+  filetransfer-retry-max-delay = 60000
+  filetransfer-retry-jitter = true
+  connect-timeout = 30
+  stalled-download-timeout = 300
+
+# scaleSets.<name>.extraNixConfig: text APPENDED after the block
+# above, for ONE scale set only. Nix reads its config top-to-bottom and
+# keeps the LAST occurrence of a scalar key, so appending -- not
+# replacing -- is what lets a later key win while every other set keeps
+# reading the release-wide block untouched. Empty by default: a set that
+# does not set it renders the release-wide nixConfig byte-for-byte, which
+# is why an unmodified release shares ONE ConfigMap across every scale
+# set exactly as before this key existed (see nixConfigFor in
+# _helpers.tpl). There is no release-wide equivalent of this key -- it
+# only ever applies to the one set that sets it.
+#
+#   scaleSets:
+#     nix-builder-arm64:
+#       extraNixConfig: |
+#         cores = 0
+#         max-jobs = 2
+
+# When set, renders `substituters = <url> https://cache.nixos.org/` into
+# the release-wide nixConfig above (so it beats the image's own
+# nix.conf, and upstream stays the automatic fallback). Empty by
+# default: the image's nix.conf lists only https://cache.nixos.org/
+# (image/runner/Dockerfile, ARG NIX_SUBSTITUTERS), so without this key
+# every runner fetches straight from upstream. A Nix cache in front of
+# it (truvity/ci-support's ci-builders serves one) is named here:
+#
+#   nixCache:
+#     url: http://nix-cache.<namespace>.svc
+nixCache:
+  url: ""
+
+# `nixBuilders` (remote Nix builders over SSH with OpenBao-signed
+# certificates) is not part of this chart: it needs a setup binary the
+# runner image here does not carry. `nixBuilders.enabled: false` is still
+# accepted, so values written for the earlier chart render unchanged;
+# anything else under `nixBuilders` fails the render
+# (templates/removed-values.yaml).
+
+# Runner pod scheduling. Empty by default (the operator's facts are
+# inputs, never defaults) -- nodeSelector and tolerations render only
+# what you set; an AWS/Karpenter fleet typically sets both (see the
+# aws-karpenter test case). Extra environment for the RUNNER container,
+# both empty by default.
+#
+# nodeSelector, tolerations, affinity, minRunners, podAnnotations,
+# extraEnv and extraEnvFrom can all be set PER SCALE SET too
+# (scaleSets.<name>.<key>), falling back to the release-wide value above
+# when the key is absent from that scale set. Each one REPLACES the
+# release-wide value outright rather than merging into it -- a map or a
+# list has exactly one obvious "unset" shape (empty), and a deep merge
+# would leave no way to ask for that shape on one set while the release
+# default is non-empty. This is the escape hatch for the one-different-set
+# case (a big Nix builder pinned to one node, an amd64 set on a dedicated
+# host) that used to cost a whole second release of this chart:
+#
+#   scaleSets:
+#     nix-builder-arm64:
+#       gomaxprocs: 4
+#       resources: {...}
+#       nodeSelector:
+#         kubernetes.io/hostname: <node>
+#       tolerations: []
+#       minRunners: 0
+#
+# THE CASE THIS EXISTS FOR. The Go build cache (setup-devbox's GOCACHEPROG)
+# and the module proxy speak S3. On AWS the runner's own pod identity
+# answers and neither of these is needed. On an S3-COMPATIBLE store --
+# Cloudflare R2, MinIO, Ceph -- there is no pod identity and there was no
+# way to hand the runner a key at all, because every entry under `env:` was
+# hard-coded. The answer is a Secret in the cluster, put there by the
+# operator's own secret machinery, rather than a repository secret in GitHub:
+# the credential then never leaves the cluster and never appears in a
+# workflow file.
+#
+#   extraEnvFrom:
+#     - secretRef: {name: gocache-r2}
+#
+# envFrom rather than named entries, so a provider that reads three
+# variables needs no chart change to read a fourth.
+extraEnvFrom: []
+# For values that are not secret and not worth a Secret of their own.
+#
+#   extraEnv:
+#     - name: AWS_ENDPOINT_URL_S3
+#       value: https://<account>.r2.cloudflarestorage.com
+extraEnv: []
+
+# Generic pod-template hooks for whatever the operator's own client needs
+# that this chart cannot know in advance: a credential helper's config
+# file, a second identity for a different audience, a setup step that
+# has to run before the runner container starts. Rendered verbatim,
+# APPENDED after this chart's own volumes/volumeMounts/initContainers
+# (awsConfig's own, below) — a name
+# collision with one of those is a list with two entries of the same
+# `name`, which Kubernetes itself refuses at apply time, not something
+# this chart tries to catch first. Empty by default (renders nothing new).
+extraVolumes: []
+extraVolumeMounts: []
+# For a setup step that has to complete before the runner container starts —
+# warming a cache, minting a credential file the runner container only
+# reads.
+extraInitContainers: []
+
+# projectedServiceAccountTokens: the common case of extraVolumes above —
+# one or more projected ServiceAccount tokens, each for its OWN
+# audience, mounted read-only at /var/run/secrets/tokens/<path>. THE
+# CASE THIS EXISTS FOR: a workload calling a service in the SAME cluster
+# presents a ServiceAccount token projected for that service's OWN
+# audience rather than exchanging anything first — the runner's default ServiceAccount
+# token (audience: the API server) proves nothing to a service that
+# names a different one. Every entry shares ONE mount point: the
+# kubelet projects every source of a projected volume into the SAME
+# directory, so two entries naming the same `path` is a render-time
+# refusal (templates/runnersets.yaml), not a silent overwrite at apply
+# time. `expirationSeconds` follows the Kubernetes TokenRequest API's own
+# floor (>= 600); the kubelet refreshes the file on its own before it
+# expires, so a caller reads it fresh on every use rather than once.
+#
+#   projectedServiceAccountTokens:
+#     - audience: r2-broker
+#       path: r2-broker-token
+#       expirationSeconds: 3600
+projectedServiceAccountTokens: []
+
+# awsConfig: an optional AWS config PROFILE this chart renders into a
+# ConfigMap and mounts read-only on the runner container ALONE, wired
+# through AWS_CONFIG_FILE/AWS_PROFILE — for a `credential_process` line
+# naming a short-lived-credential broker. THE CASE THIS EXISTS FOR: the
+# Go build cache's S3-compatible client (setup-devbox's GOCACHEPROG,
+# go-cache-plugin in this image) reads the ordinary AWS SDK credential
+# chain, and on a store with no pod identity (Cloudflare R2, MinIO,
+# Ceph) that chain previously had no way to reach a credential shorter-
+# lived than a static key in a Secret (extraEnvFrom, above). `sluisctl
+# cloudflare r2 <preset>` (truvity/sluis) is the minter the runner image
+# ships (image/runner/Dockerfile).
+#
+# EMPTY BY DEFAULT: renders no ConfigMap, mounts nothing, sets neither
+# variable — byte-identical to a chart without this key.
+#
+# REFUSED AT RENDER TIME (templates/runnersets.yaml) alongside an
+# `extraEnv` entry named AWS_ACCESS_KEY_ID: the AWS SDK's own credential
+# chain checks environment variables BEFORE a config file's
+# `credential_process`, so a static key left in `extraEnv` would
+# silently keep winning over the broker-minted one below it — the exact
+# credential being migrated away from, invoked instead of the
+# new one, with no error to say so. Move the static key (and its
+# extraEnvFrom Secret, if that is where it comes from) out before
+# turning this on: the two are alternatives for the SAME job-scoped
+# credential, never both at once.
+awsConfig:
+  enabled: false
+  # AWS_PROFILE's value; also the section header in the rendered file
+  # (`[profile <name>]`).
+  profile: ci-cache
+  # The full `credential_process` command line, exactly as it would be
+  # typed at a shell — this chart does not parse it, only writes it
+  # after the `=`. `sluisctl cloudflare r2 <preset> --lifetime 15m` is the
+  # shape sluis documents; `sluisctl` is baked into the runner image, so
+  # nothing further needs to arrive per job.
+  credentialProcess: ""
+
+nodeSelector: {}
+tolerations: []
+# A runner mid-job is not migratable state: node-consolidation eviction
+# cancels the run. Jobs end, THEN the node may go. Setting podAnnotations
+# to `{karpenter.sh/do-not-disrupt: "true"}` stops consolidation, not
+# spot reclaim — run CI pools on-demand. Empty by default; a Karpenter
+# fleet sets it.
+podAnnotations: {}
+
+# Runner PACKING: put a new runner on a node that already runs runners,
+# rather than on the emptiest node that fits.
+#
+# Why it is needed. The kube-scheduler's default scoring
+# (NodeResourcesFit with LeastAllocated, plus balanced allocation) SPREADS:
+# of the nodes a pod fits, it picks the emptiest. Bigger nodes do not fix
+# that. On a pool of nodes sized for several runners, each warm runner
+# still lands on its own node. And the do-not-disrupt annotation above
+# means the autoscaler can never move them together later: a spread made
+# at scheduling time lasts until the runners exit. The scheduler profile
+# is not ours to change on a managed control plane, so the lever is the
+# pod spec.
+#
+# What it does. Every runner pod carries the label
+# `ci-plane.io/packing-group: runners` (the key this chart had when it was
+# published from truvity/ci-plane, kept so that runners of both pack
+# together while an installation moves) and a PREFERRED podAffinity toward
+# that label, keyed on kubernetes.io/hostname, across ALL namespaces.
+# Runners of every size, every scale set and every release of this chart
+# (one per organization, one namespace each) are one packing group,
+# because they share one node pool. In the default scheduler profile the
+# inter-pod affinity score carries as much weight as the two spreading
+# scores together, and a runner node also already holds the runner image,
+# so a node that already runs runners beats an empty one, and the fuller
+# of two such nodes wins. Karpenter reads the same preference when it
+# provisions, so a burst of pending runners lands on one new node where
+# they fit.
+#
+# What it never does. It is a preference, not a requirement: it never
+# blocks scheduling. When no runner node has room, the pod goes to an
+# empty node or a new one exactly as before. It does not move running
+# pods either; the effect shows as runners are replaced.
+#
+# No anti-affinity toward non-runner pods: a CI pool is expected to be
+# dedicated (the `ci` taint above keeps other workloads off it), so there
+# is nothing on it to steer away from.
+packing:
+  enabled: true
+  # 1..100, the weight of the preferred term. Only its size relative to
+  # other preferred terms in `affinity` matters.
+  weight: 100
+
+# The runner pod's affinity, rendered as given, with the packing term
+# above APPENDED to podAffinity.preferredDuringSchedulingIgnoredDuringExecution
+# when packing is enabled. Setting it does not switch packing off; set
+# packing.enabled: false for that. scaleSets.<name>.affinity
+# REPLACES this release-wide value for one set; the packing term is still
+# appended to whichever affinity is in effect.
+#
+#   affinity:
+#     nodeAffinity:
+#       requiredDuringSchedulingIgnoredDuringExecution:
+#         nodeSelectorTerms:
+#           - matchExpressions:
+#               - {key: kubernetes.io/arch, operator: In, values: [arm64]}
+affinity: {}
+
+# The listener long-polls GitHub for jobs; it schedules wherever the
+# controller namespace allows. Empty by default; an operator whose
+# controller namespace is tainted sets the same tolerations here as
+# `tolerations` above.
+listenerTolerations: []
+
+# The profile matrix. Recipes are not one population: measured on a Go
+# monorepo, linters peak at a flat ~4Gi while a cold build wants ~20Gi;
+# one profile sized for the second group parks trivial jobs on huge
+# nodes. Sizes are MEASURED, not guessed — memory request == limit so
+# memory cannot be overcommitted: however many runners pack onto a
+# node, their ceilings cannot sum past its allocatable. A runner killed
+# at its cgroup limit uploads NO log blob and reads as a hang, which is
+# why the ceilings err high.
+#
+# GOMAXPROCS is pinned because cgroup-aware GOMAXPROCS is Go's alone —
+# golangci-lint and `make -j$(nproc)` read the NODE's core count, and
+# CI pools are heterogeneous. The CPU LIMIT exists for the same reason:
+# without one, cpu.max is "max" and container-aware runtimes read the
+# node. There is deliberately NO ephemeral-storage REQUEST (a disk
+# request breaks scale-from-zero) but the LIMIT is load-bearing:
+# exceeding it must evict the POD, never the node.
+#
+# The map key IS the identifier: k8s object name == GitHub scale-set
+# name == the workflow's `runs-on` label. Renaming one prunes the old
+# set and strands queued jobs — add alongside, never rename.
+# HELM MERGES MAPS, SO THESE THREE ARE INHERITED, NOT REPLACED. A caller
+# that adds a profile of its own gets FOUR scale sets, not one: these three
+# are sized for a cloud pool (24Gi, 14Gi, 6Gi), and on a smaller cluster they
+# are admitted, never schedule, and each registers a runner label with the
+# organisation that nothing can satisfy.
+#
+# Delete the ones you do not want by setting them to null:
+#
+#   scaleSets:
+#     preview-large: null
+#     preview-medium: null
+#     preview-small: null
+#     my-profile: {...}
+#
+# And note WHERE you write that: Argo CD strips nulls out of
+# `helm.valuesObject`, so the deletion silently does not happen there. Use
+# `helm.values` (a string) or a values file. Two installations hit this
+# independently, which is why it is written down rather than left to be
+# rediscovered.
+#
+# scaleSets.<name>.restricted, off by default, runs THIS set on the
+# Pod Security `restricted` profile: its runner pods (and their init
+# container) run
+# as the numeric `runnerUser`, with seccomp RuntimeDefault,
+# allowPrivilegeEscalation false and every capability dropped. What it
+# costs a job is in docs/restricted-runners.md: no `sudo`, no setuid
+# binaries, no file capabilities. Meant for a canary set first. Every
+# set's listener pod (controller namespace) is restricted regardless of
+# this key.
+#
+#   scaleSets:
+#     preview-restricted:
+#       restricted: true
+#       gomaxprocs: 4
+#       resources: {...}
+#
+# scaleSets.<name>.nixSandbox, off by default, turns Nix's own
+# build sandbox on for THIS set's runner pods. See docs/nix-sandbox.md
+# for the full why; short version: the image's Nix is single-user, so
+# with the sandbox off one derivation's builder can write into another
+# derivation's output before it is signed, and read
+# /proc/<pid>/environ of every process in the pod -- including the
+# runner's, which holds the GitHub OIDC request-token variables. Nix's
+# sandbox needs a Linux user namespace, which needs `hostUsers: false`
+# on the pod (rendered automatically when enabled) and a node that
+# permits user namespaces (Talos: user.max_user_namespaces > 0, KSPP's
+# default is 0) -- the operator's duty, not this chart's. `seccompProfile` is
+# REQUIRED when enabled: a path under the kubelet's seccomp root
+# (e.g. profiles/nix-sandbox.json) that the node must already carry --
+# generate it with hack/gen-nix-sandbox-seccomp.sh. Enabling this
+# without ALSO enabling nixSandbox.fence.enabled below leaves the
+# profile usable by any OTHER pod the scheduler puts on the same node
+# (baseline pod security admits any Localhost profile).
+#
+#   scaleSets:
+#     nix-builder-arm64:
+#       nixSandbox:
+#         enabled: true
+#         seccompProfile: profiles/nix-sandbox.json
+scaleSets:
+  preview-large:
+    gomaxprocs: 4
+    resources:
+      requests:
+        cpu: "2"
+        memory: 24Gi
+      limits:
+        cpu: "4"
+        memory: 24Gi
+        ephemeral-storage: 40Gi
+  # The middle of the measured distribution (2026-08-27 fleet survey,
+  # cgroup memory.peak across 22 jobs): a 10.4–13.4Gi cluster — Go
+  # lint/test, a JS monorepo's CI, a front-end build — sat on 24Gi
+  # runners at ~50%. 14Gi is the packing sweet spot: TWO medium
+  # runners fit one r6g.xlarge (~29Gi allocatable), where one 24Gi
+  # runner monopolized it. gomaxprocs stays 4 (CPU is compressible;
+  # memory does the packing). The peak line each job prints is the
+  # promotion/demotion evidence — a job whose limit hits climb here
+  # goes back to large.
+  preview-medium:
+    gomaxprocs: 4
+    resources:
+      requests:
+        cpu: "2"
+        memory: 14Gi
+      limits:
+        cpu: "4"
+        memory: 14Gi
+        ephemeral-storage: 30Gi
+  preview-small:
+    gomaxprocs: 2
+    resources:
+      requests:
+        cpu: "1"
+        memory: 6Gi
+      limits:
+        cpu: "2"
+        memory: 6Gi
+        ephemeral-storage: 20Gi
+
+# Release-wide only; a scale set's own nixSandbox.enabled lives under
+# scaleSets.<name> above. Off by default: a scale set's sandbox mutation
+# (hostUsers, procMount, seccompProfile) works without this, but nothing
+# then stops ANOTHER pod scheduled onto the same node from naming the
+# same profile file, since baseline pod security admits any Localhost
+# profile a node happens to carry. Turning this on renders a
+# ValidatingAdmissionPolicy (cluster-scoped) that refuses any Pod,
+# Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController,
+# Job or CronJob naming a sandboxed set's profile UNLESS it is a Pod in
+# THIS release's namespace, carrying that set's
+# actions.github.com/scale-set-name label, with hostUsers: false. Refused
+# at render time if true with no scaleSets entry actually sandboxed --
+# the policy would protect nothing (templates/nix-sandbox-fence.yaml).
+# See docs/nix-sandbox.md.
+nixSandbox:
+  fence:
+    enabled: false
+
+janitor:
+  # Sweeps ephemeral runners that have stopped making progress. TWO
+  # signatures, because they strand a runner in opposite ways and one
+  # sweep cannot see the other.
+  #
+  # 1. STRANDED (upstream ARC #4307, "Ephemeral Runners seem to get stuck
+  #    when job is canceled or interrupted"). Cancellation is the trigger,
+  #    and `concurrency: cancel-in-progress` makes cancels routine, so the
+  #    sweep is not optional. Deletes ONLY runners that hold NO job, match
+  #    a stuck signature in their own log, and are past the grace period.
+  #
+  # 2. WEDGED IN DELETION. A runner whose JIT registration is spent
+  #    crash-loops on "Registration ... was not found", and its
+  #    runner-registration finalizer cannot complete because the
+  #    registration it wants to remove is already gone. It can neither run
+  #    nor die, while still HOLDING the job GitHub assigned it -- which is
+  #    precisely why signature 1 skips it. Strips the finalizer, which is
+  #    safe for the same reason it is stuck: there is nothing left on
+  #    GitHub's side to orphan. Gated on the deletion being older than the
+  #    grace period, so an ordinary delete is never touched.
+  #
+  # Signature 2 stalled a whole organization's CI on 2026-09-24 until a
+  # person cleared it by hand. Remove 1 when #4307 ships a fix; 2 stands
+  # until a JIT registration survives a container restart.
+  enabled: true
+  schedule: "*/3 * * * *"
+  graceSeconds: 180
+  image:
+    registry: docker.io
+    repository: alpine/k8s
+    # renovate: datasource=docker depName=alpine/k8s
+    tag: 1.37.0
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

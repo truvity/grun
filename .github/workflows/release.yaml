@@ -1,5 +1,8 @@
 # Release: a v* tag publishes the runner image (image/runner/) as a
-# multi-arch manifest list, ghcr.io/truvity/grun/runner:<tag>.
+# multi-arch manifest list, ghcr.io/truvity/grun/runner:<tag>, and the
+# charts under charts/ (arc-runners) at the tag's version to
+# oci://ghcr.io/truvity/grun/charts, with that image's digest stamped
+# into the arc-runners defaults.
 #
 # Tag creation is restricted by ruleset: who can tag is who can publish.
 # Nothing rebuilds on a schedule and nothing publishes from a PR or a
@@ -13,7 +16,15 @@
 # are merged into one manifest list under the release tag.
 #
 # Consumers pin the tag (the CDK app's runnerImage.version) or the digest
-# the run summary prints.
+# the run summary prints; a Kubernetes consumer pins the chart version,
+# which pins the image digest.
+#
+# The packages are nested under the repository's own name
+# (ghcr.io/truvity/grun/...), so GHCR links them to this repository and
+# the first push creates them with this workflow's GITHUB_TOKEN. The
+# chart is NOT ghcr.io/truvity/charts/arc-runners: that package belongs
+# to the archived truvity/ci-plane and carries that repository's version
+# line (last release 7.8.3).
 name: Release
 
 on:
@@ -73,7 +84,11 @@ jobs:
   manifest:
     needs: build
     runs-on: ubuntu-latest
+    env:
+      CHARTS: ghcr.io/truvity/grun/charts
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Login to ghcr
@@ -82,6 +97,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
 
       - name: Merge the native halves into the release tag
+        id: image
         run: |
           set -euo pipefail
           docker buildx imagetools create \
@@ -90,4 +106,30 @@ jobs:
             "${IMAGE}:${GITHUB_REF_NAME}-arm64"
           digest=$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}" \
                      --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "runner image \`${IMAGE}:${GITHUB_REF_NAME}\` digest: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # By key, never a blind sed over every `digest:` line; the script
+      # renders the stamped chart and refuses one that names no digest.
+      - name: Stamp the runner image and the version into the charts
+        run: ./hack/stamp-runner-image.sh "${GITHUB_REF_NAME}" "${{ steps.image.outputs.digest }}"
+
+      - name: Login helm to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Package and push charts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for c in charts/*; do
+            # A chart does not lint bare: it refuses to guess the facts it
+            # needs, so lint starts from the CI base values.
+            helm lint "$c" -f "tests/ci/$(basename "$c").yaml"
+            helm package "$c" -d dist
+          done
+          for pkg in dist/*.tgz; do
+            helm push "$pkg" "oci://$CHARTS"
+          done
+          echo "charts published at ${GITHUB_REF_NAME#v} to oci://$CHARTS: $(ls dist)" >> "$GITHUB_STEP_SUMMARY"

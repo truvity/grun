@@ -9,6 +9,7 @@ GitHub Actions self-hosted runners on AWS ECS Fargate, deployed with
 | `cmd/ci-measure` | available | Go tool: start latency, duration, minutes, step breakdown and estimated cost of workflow jobs, read from the GitHub REST API |
 | [`cdk/`](cdk/README.md) | available | CDK app (TypeScript): the cdk-github-runners deployment for ECS Fargate, its runner image, the GitHub App secret sync, cost guards |
 | [`image/runner/`](image/runner/Dockerfile) | available | The GitHub Actions runner image (nix, devbox, docker client, git-lfs, gh), published multi-arch as `ghcr.io/truvity/grun/runner:<tag>` on a `v*` tag; the CDK app builds its Fargate image on top of it |
+| [`charts/arc-runners`](charts/arc-runners/README.md) | available | Helm chart: GitHub Actions runner scale sets on Kubernetes with Actions Runner Controller, on the same runner image; published as `oci://ghcr.io/truvity/grun/charts/arc-runners` on a `v*` tag, with the image digest stamped in |
 | [`boundary/`](boundary) | available | Go module `github.com/truvity/grun/boundary` (its only dependency is the standard-library-only `aws-structure/policy` module): the IAM permissions boundaries the stack needs, as policy documents generated from parameters |
 
 This repository is public and generic. It holds mechanism only: account ids,

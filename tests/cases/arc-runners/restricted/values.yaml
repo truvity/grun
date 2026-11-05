@@ -1,0 +1,25 @@
+# One scale set (preview-restricted) on the Pod Security `restricted`
+# profile next to the three default sets, which render as before, with a
+# registry override that inherits the digest. preview-large is left alone
+# to prove the key is per set.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+runnerServiceAccountName: preview-runner
+runnerImage:
+  registry: registry.example/ghcr
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+scaleSets:
+  preview-restricted:
+    restricted: true
+    minRunners: 0
+    maxRunners: 2
+    gomaxprocs: 4
+    resources:
+      requests:
+        cpu: "2"
+        memory: 14Gi
+      limits:
+        cpu: "4"
+        memory: 14Gi
+        ephemeral-storage: 30Gi

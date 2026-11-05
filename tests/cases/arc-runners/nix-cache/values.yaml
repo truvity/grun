@@ -1,0 +1,8 @@
+# A Nix read-through cache in the cluster (truvity/ci-support's
+# ci-builders serves one): every runner pod lists it first, without a
+# rebuilt image, and upstream stays the fallback.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+nixCache:
+  url: http://nix-cache.example.svc
