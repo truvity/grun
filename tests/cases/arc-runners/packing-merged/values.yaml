@@ -1,0 +1,28 @@
+# Runner packing with a caller's own affinity: the caller's node
+# affinity, pod affinity and anti-affinity are kept, and exactly ONE
+# packing term is appended to podAffinity's preferred list of every set
+# (a template that appended to .Values itself would give the second set
+# two terms and the third three).
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - {key: kubernetes.io/arch, operator: In, values: [arm64]}
+  podAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 7
+        podAffinityTerm:
+          topologyKey: topology.kubernetes.io/zone
+          labelSelector:
+            matchLabels: {app: example-cache}
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels: {app: example-noisy}

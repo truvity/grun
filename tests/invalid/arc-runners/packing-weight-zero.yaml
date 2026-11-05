@@ -1,0 +1,8 @@
+# refuses: /packing/weight
+# A preferred term's weight is 1..100; the bound is refused at render,
+# not left to the API server.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+packing:
+  weight: 0

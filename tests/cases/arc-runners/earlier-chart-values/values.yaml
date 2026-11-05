@@ -1,0 +1,87 @@
+# Values written for the earlier chart (truvity/ci-plane's arc-runners
+# 5.x) on a small self-hosted cluster: the default profiles deleted, sets
+# of its own with per-set scheduling, Nix sandboxing and fencing, an
+# in-cluster Nix cache, a credential_process for the Go cache, and
+# `nixBuilders.enabled: false`, which this chart still accepts. It must
+# render with no change to the values.
+githubConfigUrl: https://github.com/example
+githubConfigSecret: arc-github-app
+extraEnvFrom: []
+awsConfig:
+  enabled: true
+  profile: ci-cache
+  credentialProcess: >-
+    sluisctl cloudflare r2 example-preset --lifetime 15m
+    --issuer https://issuer.example
+arcVersion: "0.14.2"
+controllerServiceAccount:
+  name: arc-gha-rs-controller
+  namespace: arc-systems
+nodeSelector:
+  kubernetes.io/arch: arm64
+  node-role.kubernetes.io/worker: ""
+minRunners: 2
+maxRunners: 3
+scaleSets:
+  preview-large: null
+  preview-medium: null
+  preview-small: null
+  arm64-8g:
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - {key: kubernetes.io/hostname, operator: NotIn, values: [node-a]}
+    gomaxprocs: 2
+    minRunners: 1
+    maxRunners: 4
+    resources:
+      requests: {cpu: "1", memory: 8Gi}
+      limits: {cpu: "2", memory: 8Gi, ephemeral-storage: 10Gi}
+  arm64-sandbox-12g:
+    gomaxprocs: 8
+    minRunners: 0
+    maxRunners: 3
+    extraEnvFrom: []
+    resources:
+      requests: {cpu: "2", memory: 12Gi, ephemeral-storage: 60Gi}
+      limits: {cpu: "8", memory: 12Gi, ephemeral-storage: 80Gi}
+    extraNixConfig: |
+      experimental-features = nix-command flakes
+      cores = 0
+      max-jobs = 2
+    nixSandbox:
+      enabled: true
+      seccompProfile: profiles/nix-sandbox-pool.json
+  amd64-sandbox-4g:
+    gomaxprocs: 2
+    nodeSelector:
+      kubernetes.io/arch: amd64
+      kubernetes.io/hostname: node-b
+    tolerations:
+      - key: arch
+        operator: Equal
+        value: amd64
+        effect: NoSchedule
+    minRunners: 0
+    maxRunners: 1
+    extraEnvFrom: []
+    resources:
+      requests: {cpu: "1", memory: 4Gi}
+      limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    extraNixConfig: |
+      experimental-features = nix-command flakes
+      cores = 2
+      max-jobs = 1
+    nixSandbox:
+      enabled: true
+      seccompProfile: profiles/nix-sandbox-amd64-pool.json
+nixCache:
+  url: http://nix-cache.example.svc
+nixBuilders:
+  enabled: false
+nixSandbox:
+  fence:
+    enabled: true

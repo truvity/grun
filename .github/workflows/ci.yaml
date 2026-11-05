@@ -27,7 +27,12 @@ jobs:
       # leak-canary is the standing proof that this repository carries no
       # account ids, ARNs, hostnames or ticket keys, which is the reason it
       # can be public. It fails the build, not a report.
-      recipes: '["build", "test", "lint", "vuln", "leak-canary", "image-test", "cdk-build", "cdk-test", "cdk-synth"]'
+      #
+      # The chart-* recipes are the arc-runners chart: lint, the golden
+      # renders and refused fixtures, their Kubernetes schema check, the
+      # janitor's sweep against a stub kubectl, and the release's digest
+      # stamper on a scratch copy.
+      recipes: '["build", "test", "lint", "vuln", "leak-canary", "image-test", "cdk-build", "cdk-test", "cdk-synth", "chart-lint", "chart-golden", "chart-schema", "chart-janitor", "chart-stamp"]'
 
   # Stable name for branch protection: the matrix reports as
   # "recipes / build" and so on, so a required context called "check"

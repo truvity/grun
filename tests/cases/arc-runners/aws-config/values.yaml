@@ -1,0 +1,31 @@
+# The generic pod-template hooks, and the one they exist for -- a runner
+# pod whose Go cache reaches an S3-compatible store through a
+# credential_process (sluisctl, baked into the runner image) rather than
+# a static key. Exercises every hook in one render: awsConfig (a
+# ConfigMap + AWS_CONFIG_FILE/AWS_PROFILE), projectedServiceAccountTokens
+# (a second identity, a different audience), and
+# extraVolumes/extraVolumeMounts/extraInitContainers (the fully generic
+# escape hatch, proven with an unrelated example).
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+awsConfig:
+  enabled: true
+  profile: ci-cache
+  credentialProcess: >-
+    sluisctl cloudflare r2 example-preset --lifetime 15m
+    --issuer https://issuer.example
+projectedServiceAccountTokens:
+  - audience: example-service
+    path: example-service-token
+    expirationSeconds: 3600
+extraVolumes:
+  - name: scratch
+    emptyDir: {}
+extraVolumeMounts:
+  - name: scratch
+    mountPath: /var/run/scratch
+extraInitContainers:
+  - name: warm-something
+    image: busybox
+    command: ["true"]

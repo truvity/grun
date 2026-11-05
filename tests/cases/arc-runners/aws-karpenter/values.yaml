@@ -1,0 +1,17 @@
+# The scheduling inputs an AWS/Karpenter fleet sets explicitly: the chart
+# carries no cloud-shaped default. A cluster elsewhere sets its own
+# tolerations instead.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+tolerations:
+  - key: arch
+    operator: Exists
+  - key: ci
+    value: "true"
+    effect: NoSchedule
+podAnnotations:
+  karpenter.sh/do-not-disrupt: "true"
+listenerTolerations:
+  - key: arch
+    operator: Exists

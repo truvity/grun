@@ -1,0 +1,13 @@
+# refuses: nixBuilders.builders is not honoured
+# Off, but configured: a caller who still writes builders believes the
+# feature is there.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+nixBuilders:
+  enabled: false
+  builders:
+    - host: nix-worker-amd64.example
+      system: x86_64-linux
+      maxJobs: 2
+      speedFactor: 1

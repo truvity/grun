@@ -1,0 +1,25 @@
+{{- /*
+Keys this chart no longer honours.
+
+A chart that quietly ignores a value the caller still sets is the worst
+shape an upgrade can take: helm reports success, argo reports Synced,
+and the setting the caller asked for is simply gone. So each removed key
+fails the render and says what replaced it, or that nothing did.
+
+`nixBuilders` (remote Nix builders over SSH, certificates signed by
+OpenBao per job) needs `nix-worker-client-setup` in the runner image, and
+the image this repository publishes does not carry it. `enabled: false`
+on its own asks for nothing, so values written for the earlier chart
+(truvity/ci-plane's arc-runners) still render; any other key under it is
+a caller who believes the feature is there.
+*/ -}}
+{{- with .Values.nixBuilders }}
+{{- if .enabled }}
+{{- fail "arc-runners: nixBuilders (remote Nix builders) is not part of this chart; the runner image it ships has no nix-worker-client-setup. Remove nixBuilders from your values, or set only nixBuilders.enabled: false. Nix builds run locally in the runner pod." }}
+{{- end }}
+{{- range $k, $_ := . }}
+{{- if ne $k "enabled" }}
+{{- fail (printf "arc-runners: nixBuilders.%s is not honoured: remote Nix builders are not part of this chart. Remove nixBuilders from your values, or set only nixBuilders.enabled: false." $k) }}
+{{- end }}
+{{- end }}
+{{- end }}

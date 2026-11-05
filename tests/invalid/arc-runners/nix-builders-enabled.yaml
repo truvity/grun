@@ -1,0 +1,9 @@
+# refuses: nixBuilders (remote Nix builders) is not part of this chart
+# The earlier chart's remote builders need a setup binary the runner
+# image published here does not carry; asking for them must fail the
+# render, not install runners that silently build locally.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+nixBuilders:
+  enabled: true

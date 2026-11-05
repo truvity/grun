@@ -1,0 +1,9 @@
+# What a released chart carries: the release workflow stamps the runner
+# image's digest and tag (hack/stamp-runner-image.sh), and the digest
+# wins over the tag.
+githubConfigUrl: https://github.com/example
+controllerServiceAccount:
+  namespace: arc-system
+runnerImage:
+  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  tag: v0.0.0
