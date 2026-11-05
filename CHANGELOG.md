@@ -6,7 +6,7 @@ Tags `vX.Y.Z` version the repository. The Go module
 `github.com/truvity/grun/cdk/config` is versioned by its own tags,
 `cdk/config/vX.Y.Z`.
 
-## Unreleased
+## v0.2.0
 
 - **Add the `arc-runners` Helm chart (`charts/arc-runners`), runner scale sets on Kubernetes with Actions Runner Controller, published as `oci://ghcr.io/truvity/grun/charts/arc-runners` on a `v*` tag at the tag's version.** It is truvity/ci-plane's `arc-runners` 5.2.0 (`oci://ghcr.io/truvity/charts/arc-runners`), moved here because that repository is archived; values written for 5.2.0 render unchanged except as listed below. `.github/workflows/release.yaml` now also checks out the tree, stamps the digest and tag of the runner image it has just pushed into the chart's `runnerImage` (`hack/stamp-runner-image.sh`, by key, then renders the chart and refuses one without the digest), sets every `Chart.yaml` version to the tag, and pushes the packaged charts to `oci://ghcr.io/truvity/grun/charts` with the workflow's token (the package is under this repository's name, so GHCR links it on the first push). Changes from 5.2.0, each visible in the goldens:
   - **The runner image is `ghcr.io/truvity/grun/runner`** (`runnerImage.repository`; it was `truvity/ci-plane/runner`), at the digest of the same release. It has no `nix-worker-client-setup`, and its nix.conf lists only `https://cache.nixos.org/`: set `nixCache.url` for a cache in front of it.
