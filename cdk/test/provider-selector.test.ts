@@ -151,6 +151,32 @@ describe('the allow-list', () => {
     expect(ok(ev('acme', 'acme/release', 'release', null))).toBe(false);
   });
 
+  it('refuses a ref that matches refsExclude, and leaves an entry without it as it was', () => {
+    const tags: AllowList = {
+      acme: [
+        { repository: 'acme/wallet', workflows: ['Release'], refs: ['v*', 'main'], refsExclude: ['v*-*'] },
+        { repository: 'acme/wallet', workflows: ['Release'], refs: ['v*-rc.*'] },
+      ],
+    };
+    const tagOk = (ref: string | null) => allowed(ev('acme', 'acme/wallet', 'Release', ref).payload, tags);
+    expect(tagOk('v1.0.14')).toBe(true); // stable
+    expect(tagOk('main')).toBe(true);
+    expect(tagOk('v1.0.14-rc.2')).toBe(true); // refused by the first entry, admitted by the second
+    expect(tagOk('v1.0.14-login.1')).toBe(false); // a test tag: excluded, and no entry admits it
+    expect(tagOk('feature/x')).toBe(false);
+    expect(tagOk(null)).toBe(false);
+    const only: AllowList = { acme: [{ repository: 'acme/wallet', refs: ['v*'], refsExclude: ['v*-*'] }] };
+    expect(allowed(ev('acme', 'acme/wallet', 'x', 'v1.0.14-rc.2').payload, only)).toBe(false);
+    // without refsExclude nothing changes
+    expect(ok(ev('acme', 'acme/release', 'release', 'v1.2.3-rc.1'))).toBe(true);
+  });
+
+  it('applies refsExclude to an entry without refs (any ref but the excluded ones)', () => {
+    const noRefs: AllowList = { acme: [{ repository: 'acme/app', refsExclude: ['dependabot/*'] }] };
+    expect(allowed(ev('acme', 'acme/app', 'ci', 'main').payload, noRefs)).toBe(true);
+    expect(allowed(ev('acme', 'acme/app', 'ci', 'dependabot/npm/x').payload, noRefs)).toBe(false);
+  });
+
   it('leaves an organisation marked unrestricted alone', () => {
     expect(ok(ev('open', 'open/anything', 'x', 'y'))).toBe(true);
   });
@@ -200,6 +226,12 @@ describe('the allow-list', () => {
 });
 
 describe('parseAllowList', () => {
+  it('reads refsExclude', () => {
+    expect(parseAllowList('{"acme":[{"repository":"acme/app","refs":["v*"],"refsExclude":["v*-*"]}]}')).toEqual({
+      acme: [{ repository: 'acme/app', refs: ['v*'], refsExclude: ['v*-*'] }],
+    });
+  });
+
   it('reads a map keyed by organisation, lowercasing the key', () => {
     expect(parseAllowList('{"Acme":[{"repository":"acme/app","refs":["v*"]}],"open":null}')).toEqual({
       acme: [{ repository: 'acme/app', refs: ['v*'] }],
@@ -218,6 +250,8 @@ describe('parseAllowList', () => {
     ['an unknown key', '{"acme":[{"repository":"acme/app","branch":"main"}]}'],
     ['empty workflows', '{"acme":[{"repository":"acme/app","workflows":[]}]}'],
     ['a non-string ref', '{"acme":[{"repository":"acme/app","refs":[1]}]}'],
+    ['empty refsExclude', '{"acme":[{"repository":"acme/app","refsExclude":[]}]}'],
+    ['a non-string refsExclude', '{"acme":[{"repository":"acme/app","refsExclude":[1]}]}'],
     ['the same organisation twice', '{"acme":null,"ACME":null}'],
   ])('throws on %s', (_n, text) => {
     expect(() => parseAllowList(text)).toThrow(/ALLOW_LIST/);

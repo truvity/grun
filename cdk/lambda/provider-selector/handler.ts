@@ -31,6 +31,8 @@ export interface AllowEntry {
   workflows?: string[];
   /** Globs over workflow_job.head_branch (a tag name for a tag push); `*` matches any characters, `/` included. */
   refs?: string[];
+  /** Globs of the same kind the ref must match none of; checked after refs. Absent: no ref is excluded. */
+  refsExclude?: string[];
 }
 
 /**
@@ -79,7 +81,7 @@ export function parseAllowList(text: string): AllowList {
       if (typeof e !== 'object' || e === null || Array.isArray(e)) throw new Error(`ALLOW_LIST ${where} must be an object`);
       const o = e as Record<string, unknown>;
       for (const k of Object.keys(o)) {
-        if (!['repository', 'workflows', 'refs'].includes(k)) throw new Error(`ALLOW_LIST ${where} has unknown key ${k}`);
+        if (!['repository', 'workflows', 'refs', 'refsExclude'].includes(k)) throw new Error(`ALLOW_LIST ${where} has unknown key ${k}`);
       }
       if (typeof o.repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(o.repository)) {
         throw new Error(`ALLOW_LIST ${where}.repository must be owner/name`);
@@ -87,6 +89,7 @@ export function parseAllowList(text: string): AllowList {
       const entry: AllowEntry = { repository: o.repository };
       if (o.workflows !== undefined) entry.workflows = strings(o.workflows, `${where}.workflows`);
       if (o.refs !== undefined) entry.refs = strings(o.refs, `${where}.refs`);
+      if (o.refsExclude !== undefined) entry.refsExclude = strings(o.refsExclude, `${where}.refsExclude`);
       return entry;
     });
   }
@@ -120,7 +123,9 @@ export function globMatches(glob: string, value: string): boolean {
  * Whether the allow-list admits the job. With no list at all everything is
  * admitted. With a list, an organisation that is not in it is refused, one
  * marked unrestricted (null) is admitted, and otherwise the job's repository
- * must match an entry, and that entry's workflows and refs when it names them.
+ * must match an entry, and that entry's workflows and refs when it names them,
+ * and none of its refsExclude: `v*` with refsExclude `v*-*` admits v1.2.3 and
+ * not v1.2.3-rc.1, which the glob syntax alone cannot say.
  */
 export function allowed(payload: SelectorInput['payload'], allow: AllowList | undefined): boolean {
   if (!allow || Object.keys(allow).length === 0) return true;
@@ -135,7 +140,8 @@ export function allowed(payload: SelectorInput['payload'], allow: AllowList | un
     (e) =>
       e.repository.toLowerCase() === repository &&
       (!e.workflows || (workflow !== undefined && e.workflows.includes(workflow))) &&
-      (!e.refs || e.refs.some((g) => globMatches(g, ref))),
+      (!e.refs || e.refs.some((g) => globMatches(g, ref))) &&
+      (!e.refsExclude || !e.refsExclude.some((g) => globMatches(g, ref))),
   );
 }
 

@@ -646,7 +646,7 @@ describe('selector, cap and budget', () => {
       acme: s.config.orgs[0].allow,
       widgets: null,
     });
-    expect(JSON.parse(env.ALLOW_LIST).acme).toContainEqual({ repository: 'acme/release', workflows: ['release'], refs: ['v*', 'release/*'] });
+    expect(JSON.parse(env.ALLOW_LIST).acme).toContainEqual({ repository: 'acme/release', workflows: ['release'], refs: ['v*', 'release/*'], refsExclude: ['v*-*'] });
   });
 
   it('sets no ALLOW_LIST when no organisation has a list', () => {
