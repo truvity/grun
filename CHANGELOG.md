@@ -6,7 +6,7 @@ Tags `vX.Y.Z` version the repository. The Go module
 `github.com/truvity/grun/cdk/config` is versioned by its own tags,
 `cdk/config/vX.Y.Z`.
 
-## Unreleased
+## v0.3.0
 
 - **An allow-list entry can exclude refs: `refsExclude`.** `orgs[].allow[]` gains `refsExclude`, a non-empty list of globs of the same kind as `refs` (`*` matches any characters, `/` included; nothing else is special). A job's `workflow_job.head_branch` must match one of `refs` (when the entry has them) and none of `refsExclude`. One glob cannot say "a tag with no hyphen": `refs: ["v*"]` with `refsExclude: ["v*-*"]` admits `v1.2.3` and refuses `v1.2.3-rc.1` and `v1.2.3-login.1`, and a second entry with `refs: ["v*-rc.*"]` admits the release candidates again. An entry without `refsExclude` behaves as before, and the provider selector (`ALLOW_LIST`), the schema (`cdk/config/schema.json`, so the `cdk/config` Go module) and `lib/config.ts` all accept it. Motivation: trust-form/wallet's `Release` workflow may run on stable runners for stable and RC tags only, never for a developer's test tag (design D12 of its change `publish-release-bundles-to-ecr`). Tests: the selector and the config validation for the new key.
 
