@@ -134,6 +134,7 @@ describe('config', () => {
     it('accepts repositories with and without workflows and refs', () => {
       expect(() => validate(withAllow([{ repository: 'acme/app' }]))).not.toThrow();
       expect(() => validate(withAllow([{ repository: 'acme/app', workflows: ['release'], refs: ['v*', 'sdk-*/v*'] }]))).not.toThrow();
+      expect(() => validate(withAllow([{ repository: 'acme/app', refs: ['v*'], refsExclude: ['v*-*'] }]))).not.toThrow();
     });
 
     it('refuses an empty list, an entry without a repository, unknown keys and empty narrowing lists', () => {
@@ -145,6 +146,8 @@ describe('config', () => {
         [{ repository: 'acme/app', workflows: [] }],
         [{ repository: 'acme/app', refs: [] }],
         [{ repository: 'acme/app', refs: [''] }],
+        [{ repository: 'acme/app', refsExclude: [] }],
+        [{ repository: 'acme/app', refsExclude: [''] }],
         [{ repository: 'acme/app', workflows: ['a', 'a'] }],
         [{ repository: 'acme' }],
         [{ repository: 'acme/app extra' }],

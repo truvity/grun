@@ -149,6 +149,7 @@ orgs:
       - repository: acme/release
         workflows: [release]          # exact workflow names
         refs: ["v*", "release/*"]     # globs over the tag or branch; * matches / too
+        refsExclude: ["v*-*"]         # and none of these: stable tags only, no v1.2.3-rc.1
   - name: widgets
     sluisParameter: /example/path/widgets-grun
     webhook:
