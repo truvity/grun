@@ -401,6 +401,13 @@
                   "minItems": 1,
                   "uniqueItems": true,
                   "items": { "type": "string", "minLength": 1 }
+                },
+                "refsExclude": {
+                  "description": "Globs of the same kind the job's head_branch must match none of, checked after refs: `refs: [\"v*\"]` with `refsExclude: [\"v*-*\"]` admits v1.2.3 and refuses v1.2.3-rc.1. Absent: no ref is excluded.",
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
                 }
               }
             }

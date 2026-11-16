@@ -151,7 +151,7 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].environment` | | extra variables for this organisation's tasks |
 | `orgs[].warm` | true | give this organisation the warm pools |
 | `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
-| `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
+| `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs], refsExclude?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
 
 Default shapes (vCPU / memory GB / ephemeral disk GiB): `fg-large` 4 / 12 / 30, `fg-medium` 2 / 8 / 20,
 `fg-small` 1 / 4 / 20, `fg-xsmall` 0.5 / 1 / 20, `fg-medium-spot` 2 / 8 / 20 on
@@ -339,7 +339,10 @@ as a job that waits, which the metric explains. When an entry has
 `workflows`, the job's `workflow_job.workflow_name` must equal one of them
 exactly (case-sensitive). When it has `refs`, the job's `workflow_job.head_branch`
 (the tag name for a tag push) must match one glob, in which `*` matches any
-characters including `/` and nothing else is special. An organisation without
+characters including `/` and nothing else is special. When it has
+`refsExclude`, the ref must match none of those globs as well: `refs: ["v*"]`
+with `refsExclude: ["v*-*"]` admits a stable tag `v1.2.3` and refuses
+`v1.2.3-rc.1`, which one glob cannot say. An organisation without
 `allow` is unrestricted. All organisations of a stack share one selector, so
 the lists travel as one JSON variable keyed by organisation login
 (`ALLOW_LIST`; an organisation without a list is `null` in it); as soon as any

@@ -39,6 +39,8 @@ export interface AllowEntry {
   workflows?: string[];
   /** Globs over the job's head_branch, `*` matching any characters including `/`. Absent: any ref. */
   refs?: string[];
+  /** Globs of the same kind the head_branch must match none of. Absent: none excluded. */
+  refsExclude?: string[];
 }
 
 export interface OrgConfig {

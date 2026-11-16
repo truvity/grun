@@ -6,6 +6,10 @@ Tags `vX.Y.Z` version the repository. The Go module
 `github.com/truvity/grun/cdk/config` is versioned by its own tags,
 `cdk/config/vX.Y.Z`.
 
+## Unreleased
+
+- **An allow-list entry can exclude refs: `refsExclude`.** `orgs[].allow[]` gains `refsExclude`, a non-empty list of globs of the same kind as `refs` (`*` matches any characters, `/` included; nothing else is special). A job's `workflow_job.head_branch` must match one of `refs` (when the entry has them) and none of `refsExclude`. One glob cannot say "a tag with no hyphen": `refs: ["v*"]` with `refsExclude: ["v*-*"]` admits `v1.2.3` and refuses `v1.2.3-rc.1` and `v1.2.3-login.1`, and a second entry with `refs: ["v*-rc.*"]` admits the release candidates again. An entry without `refsExclude` behaves as before, and the provider selector (`ALLOW_LIST`), the schema (`cdk/config/schema.json`, so the `cdk/config` Go module) and `lib/config.ts` all accept it. Motivation: trust-form/wallet's `Release` workflow may run on stable runners for stable and RC tags only, never for a developer's test tag (design D12 of its change `publish-release-bundles-to-ecr`). Tests: the selector and the config validation for the new key.
+
 ## v0.2.0
 
 - **Add the `arc-runners` Helm chart (`charts/arc-runners`), runner scale sets on Kubernetes with Actions Runner Controller, published as `oci://ghcr.io/truvity/grun/charts/arc-runners` on a `v*` tag at the tag's version.** It is truvity/ci-plane's `arc-runners` 5.2.0 (`oci://ghcr.io/truvity/charts/arc-runners`), moved here because that repository is archived; values written for 5.2.0 render unchanged except as listed below. `.github/workflows/release.yaml` now also checks out the tree, stamps the digest and tag of the runner image it has just pushed into the chart's `runnerImage` (`hack/stamp-runner-image.sh`, by key, then renders the chart and refuses one without the digest), sets every `Chart.yaml` version to the tag, and pushes the packaged charts to `oci://ghcr.io/truvity/grun/charts` with the workflow's token (the package is under this repository's name, so GHCR links it on the first push). Changes from 5.2.0, each visible in the goldens:
