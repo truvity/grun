@@ -150,6 +150,10 @@ orgs:
         workflows: [release]          # exact workflow names
         refs: ["v*", "release/*"]     # globs over the tag or branch; * matches / too
         refsExclude: ["v*-*"]         # and none of these: stable tags only, no v1.2.3-rc.1
+      # Every repository of the organisation, a future one too (it needs a narrowing, here a
+      # workflow and a tag): `repository: acme/*`, `workflows: [Release]`, `refs: ["v*"]`.
+    # The most tasks of this organisation at once, inside costCap.maxConcurrentTasks:
+    # maxConcurrentTasks: 5
   - name: widgets
     sluisParameter: /example/path/widgets-grun
     webhook:

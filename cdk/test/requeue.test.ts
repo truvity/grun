@@ -1,4 +1,6 @@
+import { DescribeTasksCommand, ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
 import { ExecutionDoesNotExist } from '@aws-sdk/client-sfn';
+import { mockClient } from 'aws-sdk-client-mock';
 import { describe, expect, it } from 'vitest';
 import {
   Execution,
@@ -15,6 +17,7 @@ import {
   labelKey,
   loadConfig,
   nextAttempt,
+  orgRoom,
   pool,
   runOf,
   runnerInput,
@@ -229,5 +232,47 @@ describe('requeue: small parts', () => {
     });
     expect(peak).toBeLessThanOrEqual(3);
     expect(seen).toHaveLength(5);
+  });
+});
+
+describe('orgRoom', () => {
+  const ecs = mockClient(ECSClient);
+  const c = { clusterArn: 'c', orgCaps: { acme: 2 }, orgTagKey: 'company' };
+  const cluster = (acme: number) => {
+    ecs.reset();
+    ecs.on(ListTasksCommand).resolves({ taskArns: Array.from({ length: acme + 1 }, (_, i) => `t${i}`) });
+    ecs.on(DescribeTasksCommand).callsFake((i) => ({
+      tasks: (i.tasks as string[]).map((a, k) => ({ taskArn: a, tags: [{ key: 'company', value: k < acme ? 'Acme' : 'other' }] })),
+    }));
+  };
+
+  it('is the organisation\'s cap less its own running tasks', async () => {
+    cluster(1);
+    expect(await orgRoom(new ECSClient({}), c, 'Acme', new Map())).toBe(1);
+    cluster(2);
+    expect(await orgRoom(new ECSClient({}), c, 'acme', new Map())).toBe(0);
+  });
+
+  it('asks ECS once per organisation and follows what the round started', async () => {
+    cluster(1);
+    const counts = new Map<string, number>();
+    expect(await orgRoom(new ECSClient({}), c, 'acme', counts)).toBe(1);
+    counts.set('acme', counts.get('acme')! + 1); // the round started one
+    expect(await orgRoom(new ECSClient({}), c, 'acme', counts)).toBe(0);
+    expect(ecs.commandCalls(ListTasksCommand)).toHaveLength(1);
+  });
+
+  it('is undefined for an organisation with no cap, and asks ECS nothing', async () => {
+    cluster(1);
+    expect(await orgRoom(new ECSClient({}), c, 'widgets', new Map())).toBeUndefined();
+    expect(await orgRoom(new ECSClient({}), { clusterArn: 'c' }, 'acme', new Map())).toBeUndefined();
+    expect(ecs.commandCalls(ListTasksCommand)).toHaveLength(0);
+  });
+
+  it('is read from ORG_CAPS by loadConfig', () => {
+    const base = { TARGETS: JSON.stringify([{ org: 'acme', stateMachineArn: 's', githubSecretArn: 'g', privateKeySecretArn: 'k' }]), CLUSTER_ARN: 'c' };
+    expect(loadConfig({ ...base, ORG_CAPS: '{"acme":2}', ORG_TAG_KEY: 'company' })).toMatchObject({ orgCaps: { acme: 2 }, orgTagKey: 'company' });
+    expect(() => loadConfig({ ...base, ORG_CAPS: '{"acme":2}' })).toThrow('ORG_TAG_KEY');
+    expect(loadConfig(base)).not.toHaveProperty('orgCaps');
   });
 });

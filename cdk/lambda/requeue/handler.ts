@@ -34,7 +34,7 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import * as crypto from 'node:crypto';
-import { AllowList, allowed, parseAllowList, route } from '../provider-selector/handler';
+import { AllowList, allowed, parseAllowList, parseOrgCaps, route, runningTasksOf } from '../provider-selector/handler';
 
 export interface Target {
   org: string;
@@ -61,6 +61,10 @@ export interface RequeueConfig {
   maxIdleSeconds: number;
   shapeLabels: string[];
   allow?: AllowList;
+  /** Organisation (lowercase) -> its own task cap, inside maxConcurrentTasks; see the provider selector. */
+  orgCaps?: Record<string, number>;
+  /** The task tag whose value is the organisation. Set with orgCaps. */
+  orgTagKey?: string;
   /** Stop looking at GitHub when this much of the invocation is spent (ms). */
   budgetMs: number;
 }
@@ -119,6 +123,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): RequeueConfig {
     return v;
   };
   if (!env.CLUSTER_ARN) throw new Error('CLUSTER_ARN is required');
+  const orgCaps = env.ORG_CAPS ? parseOrgCaps(env.ORG_CAPS) : undefined;
+  if (orgCaps && Object.keys(orgCaps).length > 0 && !env.ORG_TAG_KEY) throw new Error('ORG_TAG_KEY is required with ORG_CAPS');
   return {
     targets: targets.map((t) => ({ ...t, providers: t.providers ?? {} })),
     clusterArn: env.CLUSTER_ARN,
@@ -130,6 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): RequeueConfig {
     maxIdleSeconds: n('IDLE_TIMEOUT_SECONDS', 300),
     shapeLabels: (env.SHAPE_LABELS ?? '').split(',').filter(Boolean),
     allow: env.ALLOW_LIST ? parseAllowList(env.ALLOW_LIST) : undefined,
+    ...(orgCaps && Object.keys(orgCaps).length > 0 ? { orgCaps, orgTagKey: env.ORG_TAG_KEY } : {}),
     budgetMs: n('BUDGET_SECONDS', 200) * 1000,
   };
 }
@@ -415,6 +422,24 @@ async function runningTasks(ecs: ECSClient, clusterArn: string): Promise<number>
   return n;
 }
 
+/**
+ * How many more tasks the organisation may start, by its own cap: undefined when it has
+ * none. `counts` holds what this round has read or started, so ECS is asked once per
+ * organisation.
+ */
+export async function orgRoom(
+  ecs: ECSClient,
+  c: Pick<RequeueConfig, 'clusterArn' | 'orgCaps' | 'orgTagKey'>,
+  org: string,
+  counts: Map<string, number>,
+): Promise<number | undefined> {
+  const key = org.toLowerCase();
+  const cap = c.orgCaps?.[key];
+  if (cap === undefined || !c.orgTagKey) return undefined;
+  if (!counts.has(key)) counts.set(key, await runningTasksOf(ecs, c.clusterArn, c.orgTagKey, key, cap));
+  return cap - counts.get(key)!;
+}
+
 // ---- the handler
 
 const sfn = new SFNClient({});
@@ -518,6 +543,7 @@ export async function handler(): Promise<{ started: number }> {
   rescue.sort((a, b) => Date.parse(a.job.created_at) - Date.parse(b.job.created_at));
   let started = 0;
   let tasks: number | undefined;
+  const orgTasks = new Map<string, number>();
   for (const q of rescue) {
     const smArn = stateMachines.get(q.org)!;
     try {
@@ -525,6 +551,12 @@ export async function handler(): Promise<{ started: number }> {
       if (tasks >= c.maxConcurrentTasks) {
         console.log(JSON.stringify({ notice: 'Task cap reached, the jobs left wait for the next round', waiting: rescue.length - started, tasks, cap: c.maxConcurrentTasks }));
         break;
+      }
+      // Inside the shared cap, the organisation's own: its other jobs wait, another's may go on.
+      const room = await orgRoom(ecs, c, q.org, orgTasks);
+      if (room !== undefined && room <= 0) {
+        console.log(JSON.stringify({ notice: 'Organisation task cap reached, its jobs wait for the next round', org: q.org, cap: c.orgCaps?.[q.org.toLowerCase()] }));
+        continue;
       }
       const attempt = await nextAttempt(sfn, smArn, q.repository.split('/')[1], q.job.id, c.maxAttempts);
       if (attempt === undefined) {
@@ -539,6 +571,7 @@ export async function handler(): Promise<{ started: number }> {
         throw e;
       }
       tasks++;
+      if (orgTasks.has(q.org.toLowerCase())) orgTasks.set(q.org.toLowerCase(), orgTasks.get(q.org.toLowerCase())! + 1);
       started++;
       console.log(
         JSON.stringify({
