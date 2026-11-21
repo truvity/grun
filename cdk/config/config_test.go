@@ -32,6 +32,12 @@ func TestValidate(t *testing.T) {
 		{"wrong type", with("region: eu-central-1", "region: 12"), "/region"},
 		{"pattern", with("env: example ", "env: Not_Valid "), "/env"},
 		{"missing required key", with("region: eu-central-1\n", ""), "/: "},
+		{"an org-wide allow row", with("      - repository: acme/app\n", "      - repository: acme/*\n        workflows: [Release]\n        refs: [\"v*\"]\n"), ""},
+		{"an org-wide allow row with refs only", with("      - repository: acme/app\n", "      - repository: acme/*\n        refs: [\"v*\"]\n"), ""},
+		{"an org-wide allow row that narrows nothing", with("      - repository: acme/app\n", "      - repository: acme/*\n"), "/orgs/0/allow/0"},
+		{"a partial wildcard in a repository name", with("      - repository: acme/app\n", "      - repository: acme/app*\n        refs: [\"v*\"]\n"), "/orgs/0/allow/0/repository"},
+		{"a cap for one organisation", with("    warm: true\n    # The webhook", "    warm: true\n    maxConcurrentTasks: 5\n    # The webhook"), ""},
+		{"a zero cap for one organisation", with("    warm: true\n    # The webhook", "    warm: true\n    maxConcurrentTasks: 0\n    # The webhook"), "/orgs/0/maxConcurrentTasks"},
 		{"not a document", []byte("a: [1\n"), "not YAML or JSON"},
 		{"not an object", []byte("- 1\n"), "/: "},
 	}

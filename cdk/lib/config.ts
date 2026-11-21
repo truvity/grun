@@ -31,9 +31,13 @@ export interface Shape {
   spot?: boolean;
 }
 
-/** One repository the organisation's runners may be started for. */
+/** One repository, or every repository (`owner/*`), the organisation's runners may be started for. */
 export interface AllowEntry {
-  /** owner/name; the owner is the organisation. Compared case-insensitively. */
+  /**
+   * owner/name; the owner is the organisation. Compared case-insensitively. `owner/*` is
+   * every repository of the organisation, so a new one needs no change here; it must
+   * narrow by workflows or refs (with neither it is an organisation without a list).
+   */
   repository: string;
   /** Workflow names (exact, case-sensitive). Absent: any workflow of the repository. */
   workflows?: string[];
@@ -63,6 +67,12 @@ export interface OrgConfig {
    * Absent: every job of the organisation is considered.
    */
   allow?: AllowEntry[];
+  /**
+   * The most runner tasks of this organisation that run at once, inside
+   * costCap.maxConcurrentTasks (the shared cap), so that one organisation's burst
+   * cannot take every slot from another's release. Absent: only the shared cap.
+   */
+  maxConcurrentTasks?: number;
 }
 
 export interface GrunConfig {
@@ -293,6 +303,16 @@ export function crossChecks(config: GrunConfig): string[] {
       if (e.repository.split('/')[0].toLowerCase() !== org.name.toLowerCase()) {
         problems.push(`orgs.${org.name}.allow: ${e.repository} is not a repository of ${org.name}`);
       }
+      if (e.repository.endsWith('/*') && !e.workflows && !e.refs) {
+        problems.push(`orgs.${org.name}.allow: ${e.repository} needs workflows or refs (with neither it admits every job: leave the organisation without allow)`);
+      }
+    }
+  }
+  // An organisation's cap is a share of the shared one.
+  const sharedCap = config.costCap?.maxConcurrentTasks ?? 20;
+  for (const org of config.orgs) {
+    if (org.maxConcurrentTasks !== undefined && org.maxConcurrentTasks > sharedCap) {
+      problems.push(`orgs.${org.name}.maxConcurrentTasks: ${org.maxConcurrentTasks} is above the shared costCap.maxConcurrentTasks ${sharedCap}`);
     }
   }
   // A region without a bucket would name nothing; the shared actions read the pair together.
@@ -434,4 +454,13 @@ export function resolveCaFile(
   const file = path.join(dir, 'ca.crt');
   fs.writeFileSync(file, pem.endsWith('\n') ? pem : `${pem}\n`, { mode: 0o644 });
   return file;
+}
+
+/**
+ * The ORG_CAPS of the provider selector and the requeue: the lowercase organisation
+ * -> its own task cap, or undefined when no organisation has one.
+ */
+export function orgCaps(config: GrunConfig): Record<string, number> | undefined {
+  const caps = config.orgs.filter((o) => o.maxConcurrentTasks !== undefined).map((o) => [o.name.toLowerCase(), o.maxConcurrentTasks as number]);
+  return caps.length > 0 ? Object.fromEntries(caps) : undefined;
 }

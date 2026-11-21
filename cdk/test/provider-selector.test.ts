@@ -1,7 +1,7 @@
-import { ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
+import { DescribeTasksCommand, ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
 import { mockClient } from 'aws-sdk-client-mock';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AllowList, SelectorConfig, SelectorInput, allowed, globMatches, loadConfig, parseAllowList, route, runningTasks, select } from '../lambda/provider-selector/handler';
+import { AllowList, SelectorConfig, SelectorInput, allowed, globMatches, loadConfig, parseAllowList, parseOrgCaps, route, runningTasks, runningTasksOf, select } from '../lambda/provider-selector/handler';
 
 const providers = {
   'grun-x/acme/fg-large': ['fg-large', 'linux', 'arm64'],
@@ -222,6 +222,151 @@ describe('the allow-list', () => {
   it('refuses the job of an unknown organisation (fail closed) and records it', async () => {
     expect(await select(ev('stranger', 'stranger/app', 'ci', 'main'), withAllow)).toEqual({});
     expect(JSON.parse(logged.find((l) => l.includes('AllowRefused'))!)).toMatchObject({ organization: 'stranger', repository: 'stranger/app' });
+  });
+});
+
+describe('the org-wide row (owner/*)', () => {
+  // AW-148: a new repository of the organisation needs no change to the list.
+  const wide: AllowList = { acme: [{ repository: 'acme/*', workflows: ['Release'], refs: ['v*'] }] };
+  const ev = (org: string | undefined, repo: string | undefined, workflow: string | undefined, ref: string | null | undefined) => ({
+    organization: org ? { login: org } : undefined,
+    repository: repo ? { full_name: repo } : undefined,
+    workflow_job: { labels: ['fg-large'], workflow_name: workflow, head_branch: ref },
+  });
+  const ok = (org: string | undefined, repo: string | undefined, workflow: string | undefined, ref: string | null | undefined) =>
+    allowed(ev(org, repo, workflow, ref), wide);
+
+  it('admits the named workflow on a tag of any repository of the organisation, one never listed too', () => {
+    expect(ok('acme', 'acme/landing-ie', 'Release', 'v1.0.0')).toBe(true);
+    expect(ok('acme', 'acme/landing-dom', 'Release', 'v0.1.0')).toBe(true);
+    expect(ok('acme', 'acme/a-repository-made-tomorrow', 'Release', 'v2.3.4')).toBe(true);
+    expect(ok('acme', 'ACME/Mixed-Case', 'Release', 'v1')).toBe(true);
+  });
+
+  it('keeps the narrowing: another workflow, a branch or a missing name stays refused', () => {
+    expect(ok('acme', 'acme/app', 'CI', 'v1.0.0')).toBe(false);
+    expect(ok('acme', 'acme/app', 'Release', 'main')).toBe(false);
+    expect(ok('acme', 'acme/app', 'Release', null)).toBe(false);
+    expect(ok('acme', 'acme/app', undefined, 'v1')).toBe(false);
+  });
+
+  it('is the organisation\'s only: not a repository of another owner, not a prefix, not a nested name', () => {
+    expect(ok('acme', 'acme-evil/app', 'Release', 'v1')).toBe(false);
+    expect(ok('acme', 'other/app', 'Release', 'v1')).toBe(false);
+    expect(ok('acme', 'acme/', 'Release', 'v1')).toBe(false);
+    expect(ok('acme', 'acme/a/b', 'Release', 'v1')).toBe(false);
+    expect(ok('acme', undefined, 'Release', 'v1')).toBe(false);
+    expect(ok('other', 'other/app', 'Release', 'v1')).toBe(false); // an organisation with no row at all
+  });
+
+  it('honours refsExclude, and mixes with rows that name a repository', () => {
+    const mixed: AllowList = {
+      acme: [
+        { repository: 'acme/*', workflows: ['Release'], refs: ['v*'], refsExclude: ['v*-*'] },
+        { repository: 'acme/wallet', workflows: ['Deploy'], refs: ['main'] },
+      ],
+    };
+    const a = (repo: string, wf: string, ref: string) => allowed(ev('acme', repo, wf, ref), mixed);
+    expect(a('acme/new', 'Release', 'v1.0.0')).toBe(true);
+    expect(a('acme/new', 'Release', 'v1.0.0-rc.1')).toBe(false);
+    expect(a('acme/wallet', 'Deploy', 'main')).toBe(true);
+    expect(a('acme/new', 'Deploy', 'main')).toBe(false);
+  });
+
+  it('is read by parseAllowList, and only when it narrows', () => {
+    expect(parseAllowList('{"acme":[{"repository":"acme/*","workflows":["Release"],"refs":["v*"]}]}')).toEqual(wide);
+    expect(parseAllowList('{"acme":[{"repository":"acme/*","refs":["v*"]}]}').acme).toHaveLength(1);
+    expect(() => parseAllowList('{"acme":[{"repository":"acme/*"}]}')).toThrow(/needs workflows or refs/);
+    expect(() => parseAllowList('{"acme":[{"repository":"acme/*","refsExclude":["v*-*"]}]}')).toThrow(/needs workflows or refs/);
+    expect(() => parseAllowList('{"acme":[{"repository":"acme/app*","refs":["v*"]}]}')).toThrow(/owner\/name or owner\/\*/);
+    expect(() => parseAllowList('{"acme":[{"repository":"*/app","refs":["v*"]}]}')).toThrow(/owner\/name or owner\/\*/);
+  });
+});
+
+describe('the cap of one organisation', () => {
+  const taggedTask = (arn: string, org: string) => ({ taskArn: arn, tags: [{ key: 'company', value: org }] });
+  const ev = (org: string): SelectorInput => ({
+    payload: { organization: { login: org }, repository: { full_name: `${org}/app` }, workflow_job: { labels: ['fg-large'] } },
+    providers,
+  });
+  const capped: SelectorConfig = { ...config, maxConcurrentTasks: 10, orgCaps: { acme: 2 }, orgTagKey: 'company' };
+
+  it('counts the tasks of the organisation by tag, across pages and batches of 100', async () => {
+    const arns = Array.from({ length: 150 }, (_, i) => `t${i}`);
+    ecs.on(ListTasksCommand).resolvesOnce({ taskArns: arns, nextToken: 'n' }).resolvesOnce({ taskArns: ['t150'] });
+    ecs.on(DescribeTasksCommand).callsFake((i) => ({
+      tasks: (i.tasks as string[]).map((a) => taggedTask(a, Number(a.slice(1)) % 3 === 0 ? 'Acme' : 'other')),
+    }));
+    expect(await runningTasksOf(new ECSClient({}), 'c', 'company', 'acme', 1000)).toBe(51); // 0, 3, ... 150, case-insensitive
+    expect(ecs.commandCalls(DescribeTasksCommand).map((c) => c.args[0].input.tasks!.length)).toEqual([100, 50, 1]);
+    expect(ecs.commandCalls(DescribeTasksCommand)[0].args[0].input.include).toEqual(['TAGS']);
+  });
+
+  it('stops reading once past the limit', async () => {
+    ecs.on(ListTasksCommand).resolvesOnce({ taskArns: ['t0', 't1'], nextToken: 'n' }).resolvesOnce({ taskArns: ['t2'] });
+    ecs.on(DescribeTasksCommand).callsFake((i) => ({ tasks: (i.tasks as string[]).map((a) => taggedTask(a, 'acme')) }));
+    expect(await runningTasksOf(new ECSClient({}), 'c', 'company', 'acme', 2)).toBe(2);
+    expect(ecs.commandCalls(ListTasksCommand)).toHaveLength(1);
+  });
+
+  it('is zero for no task, and ignores a task without the tag', async () => {
+    ecs.on(ListTasksCommand).resolves({ taskArns: [] });
+    expect(await runningTasksOf(new ECSClient({}), 'c', 'company', 'acme', 5)).toBe(0);
+    ecs.reset();
+    ecs.on(ListTasksCommand).resolves({ taskArns: ['t0', 't1'] });
+    ecs.on(DescribeTasksCommand).resolves({ tasks: [{ taskArn: 't0' }, { taskArn: 't1', tags: [{ key: 'other', value: 'acme' }] }] });
+    expect(await runningTasksOf(new ECSClient({}), 'c', 'company', 'acme', 5)).toBe(0);
+  });
+
+  const cluster = (acme: number, other: number) => {
+    // ListTasks is called for the shared count (ARNs only) and for the organisation's count.
+    ecs.on(ListTasksCommand).resolves({ taskArns: [...Array.from({ length: acme }, (_, i) => `a${i}`), ...Array.from({ length: other }, (_, i) => `o${i}`)] });
+    ecs.on(DescribeTasksCommand).callsFake((i) => ({
+      tasks: (i.tasks as string[]).map((a) => taggedTask(a, a.startsWith('a') ? 'acme' : 'other')),
+    }));
+  };
+
+  it('refuses a job of the organisation at its cap although the shared one has room, with one OrgCapRefused metric', async () => {
+    cluster(2, 1);
+    expect(await select(ev('acme'), capped)).toEqual({});
+    const lines = logged.filter((l) => l.includes('OrgCapRefused'));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ Stack: 'grun-x', OrgCapRefused: 1, organization: 'acme', running: 2, max: 2, action: 'skip' });
+    expect(logged.some((l) => l.includes('"CapRefused"'))).toBe(false);
+  });
+
+  it('starts the job below the cap', async () => {
+    cluster(1, 5);
+    expect((await select(ev('acme'), capped)).provider).toBe('grun-x/acme/fg-large');
+  });
+
+  it('leaves another organisation alone: no cap of its own, no DescribeTasks', async () => {
+    ecs.on(ListTasksCommand).resolves(tasks(3));
+    expect((await select(ev('other'), capped)).provider).toBe('grun-x/acme/fg-large'); // the fixture has one provider table
+    expect(ecs.commandCalls(DescribeTasksCommand)).toHaveLength(0);
+  });
+
+  it('defers like the shared cap when onExceed is defer', async () => {
+    cluster(2, 0);
+    await expect(select(ev('acme'), { ...capped, onExceed: 'defer' })).rejects.toThrow(/task cap of acme reached \(2\/2\)/);
+  });
+
+  it('is inside the shared cap: the shared cap still refuses first', async () => {
+    ecs.on(ListTasksCommand).resolves(tasks(10));
+    expect(await select(ev('acme'), capped)).toEqual({});
+    expect(logged.some((l) => l.includes('"CapRefused"'))).toBe(true);
+    expect(ecs.commandCalls(DescribeTasksCommand)).toHaveLength(0);
+  });
+
+  it('is read from ORG_CAPS and ORG_TAG_KEY, strictly', () => {
+    const base = { CLUSTER_ARN: 'c', MAX_CONCURRENT_TASKS: '10', ON_EXCEED: 'skip', SHAPE_LABELS: 'a', STACK_NAME: 's' };
+    expect(loadConfig({ ...base, ORG_CAPS: '{"Acme":2}', ORG_TAG_KEY: 'company' })).toMatchObject({ orgCaps: { acme: 2 }, orgTagKey: 'company' });
+    expect(loadConfig(base)).not.toHaveProperty('orgCaps');
+    expect(() => loadConfig({ ...base, ORG_CAPS: '{"acme":2}' })).toThrow('ORG_TAG_KEY');
+    expect(parseOrgCaps('{}')).toEqual({});
+    for (const bad of ['{', '[]', '{"acme":0}', '{"acme":1.5}', '{"acme":"2"}', '{"acme":1,"ACME":2}']) {
+      expect(() => parseOrgCaps(bad), bad).toThrow(/ORG_CAPS/);
+    }
   });
 });
 

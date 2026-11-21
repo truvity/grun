@@ -3,8 +3,11 @@
 // (2) refuses the job when the cluster already runs the configured maximum
 // number of tasks, and records that as a metric the stack alarms on, and
 // (3) before either, refuses a job the organisation's allow-list does not name
-// (repository, and when listed workflow and ref), recorded as a metric only.
-import { ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
+// (repository, and when listed workflow and ref), recorded as a metric only, and
+// (4) refuses the job when its organisation already runs ITS maximum number of
+// tasks (a cap inside the shared one), so one organisation's burst cannot take
+// every slot from another's release.
+import { DescribeTasksCommand, ECSClient, ListTasksCommand } from '@aws-sdk/client-ecs';
 
 export interface SelectorInput {
   payload: {
@@ -25,7 +28,11 @@ export interface SelectorResult {
 
 /** One allowed repository of an organisation; workflows and refs, when present, narrow it. */
 export interface AllowEntry {
-  /** owner/name, compared case-insensitively. */
+  /**
+   * owner/name, compared case-insensitively, or `owner/*`: every repository of the
+   * owner (the organisation). An `owner/*` entry must narrow by workflows or refs:
+   * with neither it would admit everything, which is an organisation without a list.
+   */
   repository: string;
   /** Workflow names, compared exactly (case-sensitive). */
   workflows?: string[];
@@ -50,7 +57,18 @@ export interface SelectorConfig {
   stackName: string;
   /** Absent: no organisation has an allow-list and every job is considered. */
   allow?: AllowList;
+  /**
+   * Organisation login (lowercase) -> the most tasks of its own that may run at once,
+   * inside maxConcurrentTasks. An organisation that is not a key has only the shared cap.
+   */
+  orgCaps?: Record<string, number>;
+  /** The tag the tasks of an organisation carry, whose value is the organisation's name. */
+  orgTagKey?: string;
 }
+
+/** An `owner/*` repository: every repository of the owner. */
+const WILDCARD_REPOSITORY = /^[^/\s*]+\/\*$/;
+const NAMED_REPOSITORY = /^[^/\s*]+\/[^/\s*]+$/;
 
 /** Strict reader of the ALLOW_LIST variable: malformed JSON or a wrong shape throws. */
 export function parseAllowList(text: string): AllowList {
@@ -83,15 +101,37 @@ export function parseAllowList(text: string): AllowList {
       for (const k of Object.keys(o)) {
         if (!['repository', 'workflows', 'refs', 'refsExclude'].includes(k)) throw new Error(`ALLOW_LIST ${where} has unknown key ${k}`);
       }
-      if (typeof o.repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(o.repository)) {
-        throw new Error(`ALLOW_LIST ${where}.repository must be owner/name`);
+      if (typeof o.repository !== 'string' || !(NAMED_REPOSITORY.test(o.repository) || WILDCARD_REPOSITORY.test(o.repository))) {
+        throw new Error(`ALLOW_LIST ${where}.repository must be owner/name or owner/*`);
       }
       const entry: AllowEntry = { repository: o.repository };
       if (o.workflows !== undefined) entry.workflows = strings(o.workflows, `${where}.workflows`);
       if (o.refs !== undefined) entry.refs = strings(o.refs, `${where}.refs`);
       if (o.refsExclude !== undefined) entry.refsExclude = strings(o.refsExclude, `${where}.refsExclude`);
+      if (WILDCARD_REPOSITORY.test(entry.repository) && !entry.workflows && !entry.refs) {
+        throw new Error(`ALLOW_LIST ${where}: ${entry.repository} needs workflows or refs (without either, leave the organisation without a list)`);
+      }
       return entry;
     });
+  }
+  return out;
+}
+
+/** Strict reader of the ORG_CAPS variable: an object of organisation -> positive integer. */
+export function parseOrgCaps(text: string): Record<string, number> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`ORG_CAPS is not valid JSON: ${(e as Error).message}`);
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('ORG_CAPS must be a JSON object keyed by organisation');
+  const out: Record<string, number> = {};
+  for (const [org, n] of Object.entries(raw)) {
+    const key = org.toLowerCase();
+    if (key in out) throw new Error(`ORG_CAPS names organisation ${key} twice`);
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) throw new Error(`ORG_CAPS ${org} must be a positive integer`);
+    out[key] = n;
   }
   return out;
 }
@@ -103,6 +143,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SelectorConfig
     return v;
   };
   const allow = env.ALLOW_LIST ? parseAllowList(env.ALLOW_LIST) : undefined;
+  const orgCaps = env.ORG_CAPS ? parseOrgCaps(env.ORG_CAPS) : undefined;
+  if (orgCaps && Object.keys(orgCaps).length > 0 && !env.ORG_TAG_KEY) throw new Error('ORG_TAG_KEY is not set (ORG_CAPS needs it)');
   return {
     clusterArn: need('CLUSTER_ARN'),
     maxConcurrentTasks: Number(need('MAX_CONCURRENT_TASKS')),
@@ -110,6 +152,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SelectorConfig
     shapeLabels: need('SHAPE_LABELS').split(','),
     stackName: need('STACK_NAME'),
     ...(allow ? { allow } : {}),
+    ...(orgCaps && Object.keys(orgCaps).length > 0 ? { orgCaps, orgTagKey: env.ORG_TAG_KEY } : {}),
   };
 }
 
@@ -119,13 +162,26 @@ export function globMatches(glob: string, value: string): boolean {
   return new RegExp(`^${re}$`, 's').test(value);
 }
 
+/** `owner/name` equals the repository; `owner/*` matches any repository of the owner. Both lowercase-compared. */
+function repositoryMatches(entry: string, repository: string | undefined): boolean {
+  if (!repository) return false;
+  const e = entry.toLowerCase();
+  if (e.endsWith('/*')) {
+    const owner = e.slice(0, -1); // keeps the slash: acme/ does not match acme-evil/x
+    return repository.startsWith(owner) && repository.length > owner.length && !repository.slice(owner.length).includes('/');
+  }
+  return e === repository;
+}
+
 /**
  * Whether the allow-list admits the job. With no list at all everything is
  * admitted. With a list, an organisation that is not in it is refused, one
  * marked unrestricted (null) is admitted, and otherwise the job's repository
  * must match an entry, and that entry's workflows and refs when it names them,
  * and none of its refsExclude: `v*` with refsExclude `v*-*` admits v1.2.3 and
- * not v1.2.3-rc.1, which the glob syntax alone cannot say.
+ * not v1.2.3-rc.1, which the glob syntax alone cannot say. An entry `owner/*`
+ * matches every repository of that owner, so a new repository of the organisation
+ * needs no change to the list.
  */
 export function allowed(payload: SelectorInput['payload'], allow: AllowList | undefined): boolean {
   if (!allow || Object.keys(allow).length === 0) return true;
@@ -138,7 +194,7 @@ export function allowed(payload: SelectorInput['payload'], allow: AllowList | un
   const ref = payload.workflow_job?.head_branch ?? '';
   return entries.some(
     (e) =>
-      e.repository.toLowerCase() === repository &&
+      repositoryMatches(e.repository, repository) &&
       (!e.workflows || (workflow !== undefined && e.workflows.includes(workflow))) &&
       (!e.refs || e.refs.some((g) => globMatches(g, ref))) &&
       (!e.refsExclude || !e.refsExclude.some((g) => globMatches(g, ref))),
@@ -171,6 +227,28 @@ export async function runningTasks(ecs: ECSClient, clusterArn: string, stopAfter
     const out = await ecs.send(new ListTasksCommand({ cluster: clusterArn, desiredStatus: 'RUNNING', nextToken }));
     count += out.taskArns?.length ?? 0;
     nextToken = out.nextToken;
+  } while (nextToken && count < stopAfter);
+  return count;
+}
+
+/**
+ * Tasks of one organisation that are pending, provisioning or running: those whose
+ * tag `tagKey` equals the organisation (case-insensitively). ECS lists task ARNs
+ * only for the whole cluster, so the tags come from DescribeTasks, 100 at a time.
+ * Stops reading once the count has passed `stopAfter`.
+ */
+export async function runningTasksOf(ecs: ECSClient, clusterArn: string, tagKey: string, org: string, stopAfter: number): Promise<number> {
+  const want = org.toLowerCase();
+  let count = 0;
+  let nextToken: string | undefined;
+  do {
+    const page = await ecs.send(new ListTasksCommand({ cluster: clusterArn, desiredStatus: 'RUNNING', nextToken }));
+    nextToken = page.nextToken;
+    const arns = page.taskArns ?? [];
+    for (let i = 0; i < arns.length; i += 100) {
+      const described = await ecs.send(new DescribeTasksCommand({ cluster: clusterArn, tasks: arns.slice(i, i + 100), include: ['TAGS'] }));
+      count += (described.tasks ?? []).filter((t) => (t.tags ?? []).some((x) => x.key === tagKey && x.value?.toLowerCase() === want)).length;
+    }
   } while (nextToken && count < stopAfter);
   return count;
 }
@@ -217,6 +295,26 @@ export async function select(input: SelectorInput, config: SelectorConfig, ecs: 
       throw new Error(`task cap reached (${running}/${config.maxConcurrentTasks}); deferring`);
     }
     return {};
+  }
+
+  // Inside the shared cap: the organisation's own.
+  const org = input.payload.organization?.login?.toLowerCase();
+  const orgCap = org ? config.orgCaps?.[org] : undefined;
+  if (org && orgCap !== undefined && config.orgTagKey) {
+    const own = await runningTasksOf(ecs, config.clusterArn, config.orgTagKey, org, orgCap);
+    if (own >= orgCap) {
+      metric('OrgCapRefused', config.stackName, {
+        organization: org,
+        running: own,
+        max: orgCap,
+        action: config.onExceed,
+        repository: input.payload.repository?.full_name,
+      });
+      if (config.onExceed === 'defer') {
+        throw new Error(`task cap of ${org} reached (${own}/${orgCap}); deferring`);
+      }
+      return {};
+    }
   }
   return chosen;
 }

@@ -657,6 +657,42 @@ describe('selector, cap and budget', () => {
     expect(f.Properties.Environment.Variables).not.toHaveProperty('ALLOW_LIST');
   });
 
+  it('sets no ORG_CAPS and gives no DescribeTasks when no organisation has a cap', () => {
+    const env = fn(/Routes a job/).Environment.Variables;
+    expect(env).not.toHaveProperty('ORG_CAPS');
+    expect(env).not.toHaveProperty('ORG_TAG_KEY');
+    expect(fn(/Starts a runner again/).Environment.Variables).not.toHaveProperty('ORG_CAPS');
+    for (const prefix of ['ProviderSelectorServiceRoleDefaultPolicy', 'RequeueServiceRoleDefaultPolicy']) {
+      const p = resources(s.json, 'AWS::IAM::Policy').find(([id]) => id.startsWith(prefix))![1];
+      expect(JSON.stringify(p.Properties.PolicyDocument)).not.toContain('ecs:DescribeTasks');
+    }
+  });
+
+  describe('with a cap for an organisation', () => {
+    const t = synth((c) => {
+      c.orgs[0].maxConcurrentTasks = 4;
+    });
+    const f = (desc: RegExp) => resources(t.json, 'AWS::Lambda::Function').find(([, x]) => desc.test(x.Properties.Description ?? ''))![1].Properties;
+
+    it('hands the selector and the requeue the caps and the tag that names an organisation', () => {
+      for (const d of [/Routes a job/, /Starts a runner again/]) {
+        const env = f(d).Environment.Variables;
+        expect(JSON.parse(env.ORG_CAPS)).toEqual({ acme: 4 });
+        expect(env.ORG_TAG_KEY).toBe('company');
+      }
+    });
+
+    it('lets both read the tags of the tasks of this cluster only', () => {
+      for (const prefix of ['ProviderSelectorServiceRoleDefaultPolicy', 'RequeueServiceRoleDefaultPolicy']) {
+        const p = resources(t.json, 'AWS::IAM::Policy').find(([id]) => id.startsWith(prefix))![1];
+        // CDK folds statements with the same resource and condition into one.
+        const st = p.Properties.PolicyDocument.Statement.find((x: any) => [x.Action].flat().includes('ecs:DescribeTasks'));
+        expect([st.Action].flat().sort()).toEqual(['ecs:DescribeTasks', 'ecs:ListTasks']);
+        expect(st.Condition.ArnEquals['ecs:cluster']).toBeDefined();
+      }
+    });
+  });
+
   it('gives the selector list access to its cluster only', () => {
     const p = resources(s.json, 'AWS::IAM::Policy').find(([id]) => id.startsWith('ProviderSelectorServiceRoleDefaultPolicy'))![1];
     const st = p.Properties.PolicyDocument.Statement.find((x: any) => x.Action === 'ecs:ListTasks');

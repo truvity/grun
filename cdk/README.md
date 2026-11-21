@@ -151,7 +151,8 @@ marked; everything else has the default shown. The schema is authoritative.
 | `orgs[].environment` | | extra variables for this organisation's tasks |
 | `orgs[].warm` | true | give this organisation the warm pools |
 | `orgs[].runnerGroup` | the organisation's default group | GitHub runner group the runners register in (see "Runner groups and labels") |
-| `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name, workflows?: [names], refs?: [globs], refsExclude?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene") |
+| `orgs[].allow` | absent: unrestricted | non-empty list of `{repository: owner/name or owner/*, workflows?: [names], refs?: [globs], refsExclude?: [globs]}`: a runner is started only for a job of one of these repositories (see "Runner hygiene"). `owner/*` is every repository of the organisation and needs `workflows` or `refs` |
+| `orgs[].maxConcurrentTasks` | absent: only the shared cap | the most runner tasks of this organisation at once, inside `costCap.maxConcurrentTasks` (see "Runner hygiene") |
 
 Default shapes (vCPU / memory GB / ephemeral disk GiB): `fg-large` 4 / 12 / 30, `fg-medium` 2 / 8 / 20,
 `fg-small` 1 / 4 / 20, `fg-xsmall` 0.5 / 1 / 20, `fg-medium-spot` 2 / 8 / 20 on
@@ -343,7 +344,12 @@ characters including `/` and nothing else is special. When it has
 `refsExclude`, the ref must match none of those globs as well: `refs: ["v*"]`
 with `refsExclude: ["v*-*"]` admits a stable tag `v1.2.3` and refuses
 `v1.2.3-rc.1`, which one glob cannot say. An organisation without
-`allow` is unrestricted. All organisations of a stack share one selector, so
+`allow` is unrestricted. A repository of `owner/*` matches every repository of
+that owner, the organisation, so a new repository needs no change to the list
+(`{repository: acme/*, workflows: [Release], refs: ["v*"]}` lets any repository
+of `acme` release on a tag); it must carry `workflows` or `refs`, since with
+neither it would admit every job, which is an organisation without a list, and
+`owner/name*` is not a pattern. All organisations of a stack share one selector, so
 the lists travel as one JSON variable keyed by organisation login
 (`ALLOW_LIST`; an organisation without a list is `null` in it); as soon as any
 organisation has a list, a job from a login that is not in the file at all is
@@ -352,6 +358,19 @@ named like a tag; the repository check is the hard part and `workflows` and
 `refs` narrow it. The list does not govern warm runners: they bypass the
 selector and register at organisation level, so the runner group's repository
 access is what limits them.
+
+**`orgs[].maxConcurrentTasks`** is the cap of one organisation, inside the shared
+`costCap.maxConcurrentTasks` (it may not exceed it): with the shared cap alone, one
+organisation's burst takes every slot and another's release waits. The selector and the
+requeue count the organisation's tasks by the company cost tag of the task (the value is
+the organisation's name; `costTags.companyKey`, `company` by default), through
+`ecs:DescribeTasks` on the stack's cluster, and at the cap start no runner for it. The
+shared cap is checked first. `costCap.onExceed` decides what the selector does with the job
+(`defer`: the delivery fails and GitHub redelivers it; `skip`: nothing is started); the
+metric `Grun` / `OrgCapRefused` (property `organization`, `running`, `max`) is logged and
+has no alarm, since an organisation at its own cap is the cap doing its job. The caps travel
+as `ORG_CAPS` and the tag key as `ORG_TAG_KEY`, and the `DescribeTasks` statement exists
+only when some organisation has a cap.
 
 ## Design notes
 

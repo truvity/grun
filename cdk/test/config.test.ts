@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowList, crossChecks, validate } from '../lib/config';
+import { allowList, crossChecks, orgCaps, validate } from '../lib/config';
 import { exampleConfig } from './helpers';
 
 describe('config', () => {
@@ -157,6 +157,26 @@ describe('config', () => {
       }
     });
 
+    it('accepts owner/* with workflows or refs, case-insensitively as the owner', () => {
+      expect(() => validate(withAllow([{ repository: 'acme/*', workflows: ['Release'], refs: ['v*'] }]))).not.toThrow();
+      expect(() => validate(withAllow([{ repository: 'acme/*', refs: ['v*'], refsExclude: ['v*-*'] }]))).not.toThrow();
+      expect(() => validate(withAllow([{ repository: 'ACME/*', workflows: ['Release'] }]))).not.toThrow();
+      expect(() => validate(withAllow([{ repository: 'acme/*', workflows: ['Release'], refs: ['v*'] }, { repository: 'acme/app' }]))).not.toThrow();
+    });
+
+    it('refuses owner/* that narrows nothing, the owner of another organisation, and a partial wildcard', () => {
+      for (const bad of [
+        [{ repository: 'acme/*' }],
+        [{ repository: 'acme/*', refsExclude: ['v*-*'] }],
+        [{ repository: '*/*', refs: ['v*'] }],
+        [{ repository: 'acme/app*', refs: ['v*'] }],
+        [{ repository: 'acme/**', refs: ['v*'] }],
+      ]) {
+        expect(() => validate(withAllow(bad)), JSON.stringify(bad)).toThrow(/allow|repository/);
+      }
+      expect(() => validate(withAllow([{ repository: 'other/*', refs: ['v*'] }]))).toThrow(/not a repository of acme/);
+    });
+
     it('refuses a repository of another owner than the organisation', () => {
       expect(() => validate(withAllow([{ repository: 'other/app' }]))).toThrow(/not a repository of acme/);
       expect(() => validate(withAllow([{ repository: 'ACME/app' }]))).not.toThrow();
@@ -170,6 +190,31 @@ describe('config', () => {
       });
       for (const o of c.orgs) delete o.allow;
       expect(allowList(c)).toBeUndefined();
+    });
+  });
+
+  describe('orgs[].maxConcurrentTasks', () => {
+    const withCap = (n: unknown) => {
+      const c: any = exampleConfig();
+      c.orgs[0].maxConcurrentTasks = n;
+      return c;
+    };
+
+    it('accepts a cap up to the shared one, and builds the selector map from it', () => {
+      const shared = exampleConfig().costCap?.maxConcurrentTasks ?? 20;
+      expect(() => validate(withCap(1))).not.toThrow();
+      expect(() => validate(withCap(shared))).not.toThrow();
+      expect(orgCaps(validate(withCap(3)))).toEqual({ acme: 3 });
+    });
+
+    it('is undefined when no organisation has a cap', () => {
+      expect(orgCaps(exampleConfig())).toBeUndefined();
+    });
+
+    it('refuses zero, a fraction, a string and a cap above the shared one', () => {
+      for (const bad of [0, -1, 1.5, '3']) expect(() => validate(withCap(bad)), String(bad)).toThrow(/maxConcurrentTasks/);
+      const shared = exampleConfig().costCap?.maxConcurrentTasks ?? 20;
+      expect(() => validate(withCap(shared + 1))).toThrow(/above the shared costCap.maxConcurrentTasks/);
     });
   });
 
