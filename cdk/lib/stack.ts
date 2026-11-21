@@ -26,7 +26,7 @@ import {
   aws_stepfunctions as sfn,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, allowList, costTags, qualifier, stackName } from './config';
+import { DEFAULT_PERMISSIONS_BOUNDARY, DEFAULT_SHAPES, GrunConfig, allowList, costTags, orgCaps, qualifier, stackName } from './config';
 import { applyIdentityRules } from './iam';
 import { OrgRunners } from './org-runners';
 import { RunnerImage, retention } from './runner-image';
@@ -40,10 +40,17 @@ export interface GrunStackProps extends StackProps {
 
 const LAMBDA_ROOT = path.join(__dirname, '..', 'lambda');
 
+/** ORG_CAPS and the tag that names an organisation on its tasks, for the selector and the requeue; nothing without a cap. */
+function orgCapEnvironment(config: GrunConfig): Record<string, string> {
+  const caps = orgCaps(config);
+  return caps ? { ORG_CAPS: JSON.stringify(caps), ORG_TAG_KEY: costTags(config).companyKey } : {};
+}
+
 export class GrunStack extends Stack {
   public readonly cluster: ecs.Cluster;
   public readonly alertTopic: sns.Topic;
   public readonly orgs: Record<string, OrgRunners> = {};
+  private hasOrgCaps = false;
 
   constructor(scope: Construct, id: string, props: GrunStackProps) {
     // The stack deploys through the bootstrap of its own qualifier (cdk.qualifier):
@@ -115,6 +122,7 @@ export class GrunStack extends Stack {
     const cap = config.costCap ?? {};
     const maxTasks = cap.maxConcurrentTasks ?? 20;
     const allow = allowList(config);
+    this.hasOrgCaps = orgCaps(config) !== undefined;
     const selector = new nodejs.NodejsFunction(this, 'ProviderSelector', {
       description: 'Routes a job to the runner shape its label asks for and refuses it when the task cap is reached or the organisation does not allow it',
       entry: path.join(LAMBDA_ROOT, 'provider-selector', 'handler.ts'),
@@ -130,6 +138,7 @@ export class GrunStack extends Stack {
         SHAPE_LABELS: [...shapes].sort((a, b) => a.vcpu - b.vcpu || a.memoryGiB - b.memoryGiB).map((s) => s.label).join(','),
         STACK_NAME: name,
         ...(allow ? { ALLOW_LIST: JSON.stringify(allow) } : {}),
+        ...orgCapEnvironment(config),
       },
       logGroup: new logs.LogGroup(this, 'ProviderSelectorLogs', {
         retention: retention(config.logRetentionDays ?? 30),
@@ -144,6 +153,7 @@ export class GrunStack extends Stack {
         conditions: { ArnEquals: { 'ecs:cluster': this.cluster.clusterArn } },
       }),
     );
+    this.allowDescribeTasks(selector);
     const capRefused = new cloudwatch.Metric({
       namespace: 'Grun',
       metricName: 'CapRefused',
@@ -227,6 +237,21 @@ export class GrunStack extends Stack {
    * covers, the oldest first, while the task cap holds. GitHub sends the queued
    * webhook only once.
    */
+  /**
+   * With per-organisation caps a function counts an organisation's tasks by their tag, which
+   * only DescribeTasks returns. Added only then, on this cluster only.
+   */
+  private allowDescribeTasks(fn: nodejs.NodejsFunction): void {
+    if (!this.hasOrgCaps) return;
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ecs:DescribeTasks'],
+        resources: ['*'],
+        conditions: { ArnEquals: { 'ecs:cluster': this.cluster.clusterArn } },
+      }),
+    );
+  }
+
   private addRequeue(config: GrunConfig, name: string, maxTasks: number): void {
     const orgTargets = config.orgs.map((org) => {
       const runners = this.orgs[org.name].runners;
@@ -268,6 +293,7 @@ export class GrunStack extends Stack {
           .map((s) => s.label)
           .join(','),
         ...(allowList(config) ? { ALLOW_LIST: JSON.stringify(allowList(config)) } : {}),
+        ...orgCapEnvironment(config),
         BUDGET_SECONDS: '200',
       },
       logGroup: new logs.LogGroup(this, 'RequeueLogs', {
@@ -289,6 +315,7 @@ export class GrunStack extends Stack {
         conditions: { ArnEquals: { 'ecs:cluster': this.cluster.clusterArn } },
       }),
     );
+    this.allowDescribeTasks(fn);
     new events.Rule(this, 'RequeueSchedule', {
       description: `${name}: start a runner for every queued job no idle or starting runner covers`,
       schedule: events.Schedule.rate(Duration.minutes(5)),
