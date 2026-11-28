@@ -221,7 +221,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # also lists the .deb and .rpm of each architecture). `grep .` fails the
 # build on no match. The token is the job's (GH_TOKEN); the image holds none.
 # renovate: datasource=github-releases depName=cli/cli
-ARG GH_VERSION=2.103.3
+ARG GH_VERSION=2.105.0
 RUN ARCH=$(dpkg --print-architecture) \
  && F="gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
  && cd /tmp \
